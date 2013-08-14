@@ -962,6 +962,9 @@ GCS_MAVLINK::data_stream_send(void)
         if (stream_trigger(STREAM_PARAMS)) {
             send_message(MSG_NEXT_PARAM);
         }
+        
+        // don't send anything else at the same time as parameters
+        return; 
     }
 
     if (in_mavlink_delay) {
@@ -2012,6 +2015,7 @@ GCS_MAVLINK::_count_parameters()
  * @brief Send the next pending parameter, called from deferred message
  * handling code
  */
+ /*
 void
 GCS_MAVLINK::queued_param_send()
 {
@@ -2057,6 +2061,41 @@ GCS_MAVLINK::queued_param_send()
     }
     _queued_parameter_send_time_ms = tnow;
 }
+*/
+
+/**
+ * queued_param_send - Send the next pending parameter, called from deferred message
+ * handling code
+ */
+void
+GCS_MAVLINK::queued_param_send()
+{
+    // Check to see if we are sending parameters
+    if (NULL == _queued_parameter) return;
+
+    AP_Param      *vp;
+    float value;
+
+    // copy the current parameter and prepare to move to the next
+    vp = _queued_parameter;
+
+    // if the parameter can be cast to float, report it here and break out of the loop
+    value = vp->cast_to_float(_queued_parameter_type);
+
+    char param_name[AP_MAX_NAME_SIZE];
+    vp->copy_name_token(_queued_parameter_token, param_name, sizeof(param_name), true);
+
+    mavlink_msg_param_value_send(
+        chan,
+        param_name,
+        value,
+        mav_var_type(_queued_parameter_type),
+        _queued_parameter_count,
+        _queued_parameter_index);
+
+    _queued_parameter = AP_Param::next_scalar(&_queued_parameter_token, &_queued_parameter_type);
+    _queued_parameter_index++;
+} 
 
 /**
  * @brief Send the next pending waypoint, called from deferred message
