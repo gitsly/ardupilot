@@ -122,6 +122,8 @@ static void init_ardupilot()
 	
     load_parameters();
 
+    set_control_channels();
+
     // after parameter load setup correct baud rate on uartA
     hal.uartA->begin(map_baudrate(g.serial0_baud, SERIAL0_BAUD));
 
@@ -164,9 +166,7 @@ static void init_ardupilot()
 	}
 #endif
 
-#if HIL_MODE != HIL_MODE_ATTITUDE
-
-#if CONFIG_ADC == ENABLED
+#if CONFIG_HAL_BOARD == HAL_BOARD_APM1
     adc.Init();      // APM ADC library initialization
 #endif
 
@@ -183,7 +183,6 @@ static void init_ardupilot()
 	// initialise sonar
     init_sonar();
 
-#endif
 	// Do GPS init
 	g_gps = &g_gps_driver;
     // GPS initialisation
@@ -207,9 +206,7 @@ static void init_ardupilot()
 #if CONFIG_PUSHBUTTON == ENABLED
 	pinMode(PUSHBUTTON_PIN, INPUT);		// unused
 #endif
-#if CONFIG_RELAY == ENABLED
     relay.init();
-#endif
 
     /*
       setup the 'main loop is dead' check. Note that this relies on
@@ -291,6 +288,9 @@ static void startup_ground(void)
 	// Makes the servos wiggle - 3 times signals ready to fly
 	// -----------------------
 	demo_servos(3);
+
+    hal.uartA->set_blocking_writes(false);
+    hal.uartC->set_blocking_writes(false);
 
 	gcs_send_text_P(SEVERITY_LOW,PSTR("\n\n Ready to drive."));
 }
@@ -380,7 +380,6 @@ static void failsafe_trigger(uint8_t failsafe_type, bool on)
 
 static void startup_INS_ground(bool force_accel_level)
 {
-#if HIL_MODE != HIL_MODE_ATTITUDE
     gcs_send_text_P(SEVERITY_MEDIUM, PSTR("Warming up ADC..."));
  	mavlink_delay(500);
 
@@ -403,8 +402,6 @@ static void startup_INS_ground(bool force_accel_level)
         ahrs.set_trim(Vector3f(0, 0, 0));
 	}
     ahrs.reset();
-
-#endif // HIL_MODE_ATTITUDE
 
 	digitalWrite(B_LED_PIN, LED_ON);		// Set LED B high to indicate INS ready
 	digitalWrite(A_LED_PIN, LED_OFF);
@@ -562,4 +559,19 @@ static uint8_t check_digital_pin(uint8_t pin)
     hal.gpio->write(dpin, 1);
 
     return hal.gpio->read(dpin);
+}
+
+/*
+  write to a servo
+ */
+static void servo_write(uint8_t ch, uint16_t pwm)
+{
+#if HIL_MODE != HIL_MODE_DISABLED
+    if (ch < 8) {
+        RC_Channel::rc_channel(ch)->radio_out = pwm;
+    }
+#else
+    hal.rcout->enable_ch(ch);
+    hal.rcout->write(ch, pwm);
+#endif
 }

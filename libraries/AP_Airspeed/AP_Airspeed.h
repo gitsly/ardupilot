@@ -11,13 +11,12 @@ class AP_Airspeed
 {
 public:
     // constructor
-    AP_Airspeed() {
+    AP_Airspeed() : _ets_fd(-1) {
 		AP_Param::setup_object_defaults(this, var_info);
     };
 
-    void        init(AP_HAL::AnalogSource *source) {
-        _source = source;
-    }
+    void init(void);
+
     // read the analog source and update _airspeed
     void        read(void);
 
@@ -26,23 +25,43 @@ public:
     void            calibrate();
 
     // return the current airspeed in m/s
-    float           get_airspeed(void) {
+    float           get_airspeed(void) const {
         return _airspeed;
     }
 
+    // return the unfiltered airspeed in m/s
+    float           get_raw_airspeed(void) const {
+        return _raw_airspeed;
+    }
+
     // return the current airspeed in cm/s
-    float        get_airspeed_cm(void) {
+    float        get_airspeed_cm(void) const {
         return _airspeed*100;
     }
 
+    // return the current airspeed ratio (dimensionless)
+    float        get_airspeed_ratio(void) const {
+        return _ratio;
+    }
+
+    // set the airspeed ratio (dimensionless)
+    void        set_airspeed_ratio(float ratio) {
+        _ratio.set(ratio);
+    }
+
     // return true if airspeed is enabled, and airspeed use is set
-    bool        use(void) {
+    bool        use(void) const {
         return _enable && _use && _offset != 0;
     }
 
     // return true if airspeed is enabled
-    bool        enabled(void) {
+    bool        enabled(void) const {
         return _enable;
+    }
+
+    // force disable the airspeed sensor
+    void        disable(void) {
+        _enable.set(0);
     }
 
     // used by HIL to set the airspeed
@@ -58,7 +77,14 @@ private:
     AP_Float        _ratio;
     AP_Int8         _use;
     AP_Int8         _enable;
+    AP_Int8         _pin;
+    float           _raw_airspeed;
     float           _airspeed;
+    int			    _ets_fd;
+    float			_last_pressure;
+
+    // return raw differential pressure in Pascal
+    float get_pressure(void);
 };
 
 

@@ -24,19 +24,19 @@ const AP_Param::GroupInfo AP_InertialSensor::var_info[] PROGMEM = {
     // @Param: ACCSCAL_X
     // @DisplayName: Accelerometer scaling of X axis
     // @Description: Accelerometer scaling of X axis.  Calculated during acceleration calibration routine
-    // @Range 0.8 1.2
+    // @Range: 0.8 1.2
     // @User: Advanced
 
     // @Param: ACCSCAL_Y
     // @DisplayName: Accelerometer scaling of Y axis
     // @Description: Accelerometer scaling of Y axis  Calculated during acceleration calibration routine
-    // @Range 0.8 1.2
+    // @Range: 0.8 1.2
     // @User: Advanced
 
     // @Param: ACCSCAL_Z
     // @DisplayName: Accelerometer scaling of Z axis
     // @Description: Accelerometer scaling of Z axis  Calculated during acceleration calibration routine
-    // @Range 0.8 1.2
+    // @Range: 0.8 1.2
     // @User: Advanced
     AP_GROUPINFO("ACCSCAL",     1, AP_InertialSensor, _accel_scale,  0),
 
@@ -476,8 +476,8 @@ bool AP_InertialSensor::_calibrate_accel( Vector3f accel_sample[6],
     if( accel_scale.is_nan() || fabsf(accel_scale.x-1.0f) > 0.1f || fabsf(accel_scale.y-1.0f) > 0.1f || fabsf(accel_scale.z-1.0f) > 0.1f ) {
         success = false;
     }
-    // sanity check offsets (2.0 is roughly 2/10th of a G, 5.0 is roughly half a G)
-    if( accel_offsets.is_nan() || fabsf(accel_offsets.x) > 2.0f || fabsf(accel_offsets.y) > 2.0f || fabsf(accel_offsets.z) > 3.0f ) {
+    // sanity check offsets (3.5 is roughly 3/10th of a G, 5.0 is roughly half a G)
+    if( accel_offsets.is_nan() || fabsf(accel_offsets.x) > 3.5f || fabsf(accel_offsets.y) > 3.5f || fabsf(accel_offsets.z) > 3.5f ) {
         success = false;
     }
 

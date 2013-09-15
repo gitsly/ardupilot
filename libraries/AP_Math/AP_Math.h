@@ -1,4 +1,4 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: t -*-
+// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 
 #ifndef AP_MATH_H
 #define AP_MATH_H
@@ -20,7 +20,10 @@
 #include "polygon.h"
 
 #ifndef PI
-#define PI 3.141592653589793f
+ # define PI 3.141592653589793f
+#endif
+#ifndef M_PI_2
+ # define M_PI_2 1.570796326794897f
 #endif
 #define DEG_TO_RAD 0.017453292519943295769236907684886f
 #define RAD_TO_DEG 57.295779513082320876798154814105f
@@ -49,6 +52,9 @@ float           safe_asin(float v);
 
 // a varient of sqrt() that always gives a valid answer.
 float           safe_sqrt(float v);
+
+// a faster varient of atan.  accurate to 6 decimal places for values between -1 ~ 1 but then diverges quickly
+float           fast_atan(float v);
 
 #if ROTATION_COMBINATION_SUPPORT
 // find a rotation that is the combination of two other
@@ -90,6 +96,11 @@ void        location_offset(struct Location *loc, float ofs_north, float ofs_eas
  */
 int32_t wrap_360_cd(int32_t error);
 int32_t wrap_180_cd(int32_t error);
+
+/*
+  wrap an angle defined in radians to -PI ~ PI (equivalent to +- 180 degrees)
+ */
+float wrap_PI(float angle_in_radians);
 
 /*
   print a int32_t lat/long in decimal degrees

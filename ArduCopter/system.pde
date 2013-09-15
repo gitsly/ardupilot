@@ -82,7 +82,7 @@ static void init_ardupilot()
     // USB_MUX_PIN
     pinMode(USB_MUX_PIN, INPUT);
 
-    ap_system.usb_connected = !digitalReadFast(USB_MUX_PIN);
+    ap_system.usb_connected = !digitalRead(USB_MUX_PIN);
     if (!ap_system.usb_connected) {
         // USB is not connected, this means UART0 may be a Xbee, with
         // its darned bricking problem. We can't write to it for at
@@ -142,6 +142,10 @@ static void init_ardupilot()
     // load parameters from EEPROM
     load_parameters();
 
+#if HIL_MODE != HIL_MODE_ATTITUDE
+    barometer.init();
+#endif
+
     // init the GCS
     gcs0.init(hal.uartA);
 
@@ -184,7 +188,8 @@ static void init_ardupilot()
 #endif
 
     init_rc_in();               // sets up rc channels from radio
-    init_rc_out();              // sets up the timer libs
+    init_rc_out();              // sets up motors and output to escs
+
     /*
      *  setup the 'main loop is dead' check. Note that this relies on
      *  the RC library being initialised.
@@ -196,9 +201,6 @@ static void init_ardupilot()
     // begin filtering the ADC Gyros
     adc.Init();           // APM ADC library initialization
  #endif // CONFIG_ADC
-
-    barometer.init();
-
 #endif // HIL_MODE
 
     // Do GPS init
@@ -250,8 +252,8 @@ static void init_ardupilot()
 #endif
 
 #if FRAME_CONFIG == HELI_FRAME
-// initialise controller filters
-init_rate_controllers();
+    // initialise controller filters
+    init_rate_controllers();
 #endif // HELI_FRAME
 
     // initialize commands
@@ -310,14 +312,31 @@ static void startup_ground(void)
     reset_I_all();
 }
 
+// returns true or false whether mode requires GPS
+static bool mode_requires_GPS(uint8_t mode) {
+    switch(mode) {
+        case AUTO:
+        case GUIDED:
+        case LOITER: 
+        case RTL:
+        case CIRCLE:
+        case POSITION:
+            return true;
+        default:
+            return false;
+    }   
+
+    return false;
+}
+
 // set_mode - change flight mode and perform any necessary initialisation
 static void set_mode(uint8_t mode)
 {
     // Switch to stabilize mode if requested mode requires a GPS lock
-    if(!ap.home_is_set) {
-        if (mode > ALT_HOLD && mode != TOY_A && mode != TOY_M && mode != OF_LOITER && mode != LAND) {
+    if(g_gps->status() != GPS::GPS_OK_FIX_3D && mode_requires_GPS(mode)) {
             mode = STABILIZE;
-        }
+    } else if(mode == RTL && !ap.home_is_set) {
+            mode = STABILIZE;
     }
 
     // Switch to stabilize if OF_LOITER requested but no optical flow sensor
@@ -345,9 +364,9 @@ static void set_mode(uint8_t mode)
         set_nav_mode(NAV_NONE);
         // reset acro axis targets to current attitude
 		if(g.axis_enabled){
-            roll_axis 	= ahrs.roll_sensor;
-            pitch_axis 	= ahrs.pitch_sensor;
-            nav_yaw 	= ahrs.yaw_sensor;
+            roll_axis   = 0;
+            pitch_axis  = 0;
+            nav_yaw     = 0;
         }
         break;
 
@@ -401,7 +420,6 @@ static void set_mode(uint8_t mode)
         set_roll_pitch_mode(POSITION_RP);
         set_throttle_mode(POSITION_THR);
         set_nav_mode(POSITION_NAV);
-        wp_nav.clear_angle_limit();     // ensure there are no left over angle limits from throttle controller.  To-Do: move this to the exit routine of throttle controller
         break;
 
     case GUIDED:
@@ -415,7 +433,7 @@ static void set_mode(uint8_t mode)
 
     case LAND:
         // To-Do: it is messy to set manual_attitude here because the do_land function is reponsible for setting the roll_pitch_mode
-        if( ap.home_is_set ) {
+        if( ap.home_is_set && g_gps->status() == GPS::GPS_OK_FIX_3D ) {
             // switch to loiter if we have gps
             ap.manual_attitude = false;
         }else{
@@ -423,7 +441,7 @@ static void set_mode(uint8_t mode)
             ap.manual_attitude = true;
         }
     	ap.manual_throttle = false;
-        do_land();
+        do_land(NULL);  // land at current location
         break;
 
     case RTL:
@@ -533,7 +551,7 @@ static uint32_t map_baudrate(int8_t rate, uint32_t default_baud)
 #if USB_MUX_PIN > 0
 static void check_usb_mux(void)
 {
-    bool usb_check = !digitalReadFast(USB_MUX_PIN);
+    bool usb_check = !digitalRead(USB_MUX_PIN);
     if (usb_check == ap_system.usb_connected) {
         return;
     }

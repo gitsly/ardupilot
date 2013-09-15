@@ -132,7 +132,7 @@ static NOINLINE void send_extended_status1(mavlink_channel_t chan, uint16_t pack
         control_sensors_present |= (1<<2); // compass present
     }
     control_sensors_present |= (1<<3); // absolute pressure sensor present
-    if (g_gps != NULL && g_gps->status() >= GPS::NO_FIX) {
+    if (g_gps != NULL && g_gps->status() > GPS::NO_GPS) {
         control_sensors_present |= (1<<5); // GPS present
     }
     control_sensors_present |= (1<<10); // 3D angular rate control
@@ -235,12 +235,12 @@ static void NOINLINE send_location(mavlink_channel_t chan)
         fix_time,
         current_loc.lat,                // in 1E7 degrees
         current_loc.lng,                // in 1E7 degrees
-        g_gps->altitude * 10,             // millimeters above sea level
+        g_gps->altitude_cm * 10,             // millimeters above sea level
         (current_loc.alt - home.alt) * 10,           // millimeters above ground
         g_gps->velocity_north() * 100,  // X speed cm/s (+ve North)
         g_gps->velocity_east()  * 100,  // Y speed cm/s (+ve East)
         g_gps->velocity_down()  * -100, // Z speed cm/s (+ve up)
-        g_gps->ground_course);          // course in 1/100 degree
+        g_gps->ground_course_cd);          // course in 1/100 degree
 }
 
 static void NOINLINE send_nav_controller_output(mavlink_channel_t chan)
@@ -295,11 +295,11 @@ static void NOINLINE send_gps_raw(mavlink_channel_t chan)
         g_gps->status(),
         g_gps->latitude,      // in 1E7 degrees
         g_gps->longitude,     // in 1E7 degrees
-        g_gps->altitude * 10, // in mm
+        g_gps->altitude_cm * 10, // in mm
         g_gps->hdop,
         65535,
-        g_gps->ground_speed,  // cm/s
-        g_gps->ground_course, // 1/100 degrees,
+        g_gps->ground_speed_cm,  // cm/s
+        g_gps->ground_course_cd, // 1/100 degrees,
         g_gps->num_sats);
 
 }
@@ -412,8 +412,8 @@ static void NOINLINE send_vfr_hud(mavlink_channel_t chan)
 {
     mavlink_msg_vfr_hud_send(
         chan,
-        (float)g_gps->ground_speed / 100.0f,
-        (float)g_gps->ground_speed / 100.0f,
+        (float)g_gps->ground_speed_cm / 100.0f,
+        (float)g_gps->ground_speed_cm / 100.0f,
         (ahrs.yaw_sensor / 100) % 360,
         g.rc_3.servo_out/10,
         current_loc.alt / 100.0f,
@@ -616,7 +616,7 @@ static bool mavlink_try_send_message(mavlink_channel_t chan, enum ap_message id,
         CHECK_PAYLOAD_SIZE(MISSION_REQUEST);
         if (chan == MAVLINK_COMM_0) {
             gcs0.queued_waypoint_send();
-        } else {
+        } else if (gcs3.initialised) {
             gcs3.queued_waypoint_send();
         }
         break;
@@ -827,7 +827,7 @@ GCS_MAVLINK::GCS_MAVLINK() :
     waypoint_send_timeout(1000), // 1 second
     waypoint_receive_timeout(1000) // 1 second
 {
-
+    AP_Param::setup_object_defaults(this, var_info);
 }
 
 void
@@ -895,7 +895,7 @@ GCS_MAVLINK::update(void)
     uint32_t tnow = millis();
 
     if (waypoint_receiving &&
-        waypoint_request_i <= (unsigned)g.command_total &&
+        waypoint_request_i <= waypoint_request_last &&
         tnow > waypoint_timelast_request + 500 + (stream_slowdown*20)) {
         waypoint_timelast_request = tnow;
         send_message(MSG_NEXT_WAYPOINT);
@@ -1071,6 +1071,9 @@ GCS_MAVLINK::send_text_P(gcs_severity severity, const prog_char_t *str)
     uint8_t i;
     for (i=0; i<sizeof(m.text); i++) {
         m.text[i] = pgm_read_byte((const prog_char *)(str++));
+        if (m.text[i] == '\0') {
+            break;
+        }
     }
     if (i < sizeof(m.text)) m.text[i] = 0;
     mavlink_send_text(chan, severity, (const char *)m.text);
@@ -1215,7 +1218,11 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
         case MAV_CMD_COMPONENT_ARM_DISARM:
             if (packet.target_component == MAV_COMP_ID_SYSTEM_CONTROL) {
                 if (packet.param1 == 1.0f) {
-                    init_arm_motors();
+                    // run pre-arm-checks and display failures
+                    pre_arm_checks(true);
+                    if(ap.pre_arm_check) {
+                        init_arm_motors();
+                    }
                     result = MAV_RESULT_ACCEPTED;
                 } else if (packet.param1 == 0.0f)  {
                     init_disarm_motors();
@@ -1372,6 +1379,7 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
             break;
 
         case MAV_CMD_NAV_ROI:
+        case MAV_CMD_DO_SET_ROI:
             param1 = tell_command.p1;                                   // MAV_ROI (aka roi mode) is held in wp's parameter but we actually do nothing with it because we only support pointing at a specific location provided by x,y and z parameters
             break;
 
@@ -1566,7 +1574,35 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
         waypoint_receiving   = true;
         waypoint_sending         = false;
         waypoint_request_i   = 0;
+        // note that ArduCopter sets waypoint_request_last to
+        // command_total-1, whereas plane and rover use
+        // command_total. This is because the copter code assumes
+        // command_total includes home
+        waypoint_request_last= g.command_total - 1;
         waypoint_timelast_request = 0;
+        break;
+    }
+
+    case MAVLINK_MSG_ID_MISSION_WRITE_PARTIAL_LIST:
+    {
+        // decode
+        mavlink_mission_write_partial_list_t packet;
+        mavlink_msg_mission_write_partial_list_decode(msg, &packet);
+        if (mavlink_check_target(packet.target_system,packet.target_component)) break;
+
+        // start waypoint receiving
+        if (packet.start_index > g.command_total ||
+            packet.end_index > g.command_total ||
+            packet.end_index < packet.start_index) {
+            send_text_P(SEVERITY_LOW,PSTR("flight plan update rejected"));
+            break;
+        }
+
+        waypoint_timelast_receive = millis();
+        waypoint_timelast_request = 0;
+        waypoint_receiving   = true;
+        waypoint_request_i   = packet.start_index;
+        waypoint_request_last= packet.end_index;
         break;
     }
 
@@ -1585,6 +1621,7 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
     case MAVLINK_MSG_ID_MISSION_ITEM:     //39
     {
         // decode
+        uint8_t result = MAV_MISSION_ACCEPTED;
         mavlink_mission_item_t packet;
         mavlink_msg_mission_item_decode(msg, &packet);
         if (mavlink_check_target(packet.target_system,packet.target_component)) break;
@@ -1639,6 +1676,7 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
             break;
 
         case MAV_CMD_NAV_ROI:
+        case MAV_CMD_DO_SET_ROI:
             tell_command.p1 = packet.param1;                                    // MAV_ROI (aka roi mode) is held in wp's parameter but we actually do nothing with it because we only support pointing at a specific location provided by x,y and z parameters
             break;
 
@@ -1693,11 +1731,8 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
         }
 
         if(packet.current == 2) {                                               //current = 2 is a flag to tell us this is a "guided mode" waypoint and not for the mission
-            // switch to guided mode
-            set_mode(GUIDED);
-
-            // set wp_nav's destination
-            wp_nav.set_destination(pv_location_to_vector(tell_command));
+            // initiate guided mode
+            do_guided(&tell_command);
 
             // verify we recevied the command
             mavlink_msg_mission_ack_send(
@@ -1726,16 +1761,17 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
 
         } else {
             // Check if receiving waypoints (mission upload expected)
-            if (!waypoint_receiving) break;
-
-
-            //cliSerial->printf("req: %d, seq: %d, total: %d\n", waypoint_request_i,packet.seq, g.command_total.get());
+            if (!waypoint_receiving) {
+                result = MAV_MISSION_ERROR;
+                goto mission_failed;
+            }
 
             // check if this is the requested waypoint
-            if (packet.seq != waypoint_request_i)
-                break;
+            if (packet.seq != waypoint_request_i) {
+                result = MAV_MISSION_INVALID_SEQUENCE;
+                goto mission_failed;
+            }
 
-            if(packet.seq != 0)
                 set_cmd_with_index(tell_command, packet.seq);
 
             // update waypoint receiving state machine
@@ -1743,14 +1779,12 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
             waypoint_timelast_request = 0;
             waypoint_request_i++;
 
-            if (waypoint_request_i == (uint16_t)g.command_total) {
-                uint8_t type = 0;                         // ok (0), error(1)
-
+            if (waypoint_request_i > waypoint_request_last) {
                 mavlink_msg_mission_ack_send(
                     chan,
                     msg->sysid,
                     msg->compid,
-                    type);
+                    result);
 
                 send_text_P(SEVERITY_LOW,PSTR("flight plan received"));
                 waypoint_receiving = false;
@@ -1758,6 +1792,15 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
                 // only set WP_RADIUS parameter
             }
         }
+        break;
+
+mission_failed:
+        // we are rejecting the mission/waypoint
+        mavlink_msg_mission_ack_send(
+            chan,
+            msg->sysid,
+            msg->compid,
+            result);
         break;
     }
 
@@ -1891,7 +1934,7 @@ void GCS_MAVLINK::handleMessage(mavlink_message_t* msg)
                       vel*1.0e-2, cog*1.0e-2, 0, 10);
 
         if (gps_base_alt == 0) {
-            gps_base_alt = g_gps->altitude;
+            gps_base_alt = g_gps->altitude_cm;
             current_loc.alt = 0;
         }
 
@@ -2094,7 +2137,7 @@ void
 GCS_MAVLINK::queued_waypoint_send()
 {
     if (waypoint_receiving &&
-        waypoint_request_i < (unsigned)g.command_total) {
+        waypoint_request_i <= waypoint_request_last) {
         mavlink_msg_mission_request_send(
             chan,
             waypoint_dest_sysid,

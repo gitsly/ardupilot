@@ -1,4 +1,4 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: t -*-
+// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 
 /// @file	AP_MotorsHeli.h
 /// @brief	Motor control class for Traditional Heli
@@ -107,11 +107,6 @@ public:
 
     // enable - starts allowing signals to be sent to motors
     void enable();
-
-    // get basic information about the platform
-    uint8_t get_num_motors() {
-        return 5;
-    };
 
     // motor test
     void output_test();

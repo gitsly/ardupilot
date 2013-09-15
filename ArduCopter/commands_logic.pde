@@ -17,7 +17,7 @@ static void process_nav_command()
         break;
 
     case MAV_CMD_NAV_LAND:              // 21 LAND to Waypoint
-        do_land();
+        do_land(&command_nav_queue);
         break;
 
     case MAV_CMD_NAV_LOITER_UNLIM:              // 17 Loiter indefinitely
@@ -34,11 +34,6 @@ static void process_nav_command()
 
     case MAV_CMD_NAV_RETURN_TO_LAUNCH:             //20
         do_RTL();
-        break;
-
-    // point the copter and camera at a region of interest (ROI)
-    case MAV_CMD_NAV_ROI:             // 80
-        do_nav_roi();
         break;
 
     default:
@@ -107,6 +102,11 @@ static void process_now_command()
         do_repeat_relay();
         break;
 
+    case MAV_CMD_DO_SET_ROI:                // 201
+        // point the copter and camera at a region of interest (ROI)
+        do_roi();
+        break;
+
 #if CAMERA == ENABLED
     case MAV_CMD_DO_CONTROL_VIDEO:                      // Control on-board camera capturing. |Camera ID (-1 for all)| Transmission: 0: disabled, 1: enabled compressed, 2: enabled raw| Transmission mode: 0: video stream, >0: single images every n seconds (decimal)| Recording: 0: disabled, 1: enabled compressed, 2: enabled raw| Empty| Empty| Empty|
         break;
@@ -171,10 +171,6 @@ static bool verify_nav_command()
 
     case MAV_CMD_NAV_RETURN_TO_LAUNCH:
         return verify_RTL();
-        break;
-
-    case MAV_CMD_NAV_ROI:             // 80
-        return verify_nav_roi();
         break;
 
     default:
@@ -290,13 +286,12 @@ static void do_nav_wp()
 
 // do_land - initiate landing procedure
 // caller should set roll_pitch_mode to ROLL_PITCH_AUTO (for no pilot input) or ROLL_PITCH_LOITER (for pilot input)
-// caller should set yaw_mode
-static void do_land()
+static void do_land(const struct Location *cmd)
 {
     // To-Do: check if we have already landed
 
     // if location provided we fly to that location at current altitude
-    if (command_nav_queue.lat != 0 || command_nav_queue.lng != 0) {
+    if (cmd != NULL && (cmd->lat != 0 || cmd->lng != 0)) {
         // set state to fly to location
         land_state = LAND_STATE_FLY_TO_LOCATION;
 
@@ -313,16 +308,31 @@ static void do_land()
         set_nav_mode(NAV_WP);
 
         // calculate and set desired location above landing target
-        Vector3f pos = pv_location_to_vector(command_nav_queue);
+        Vector3f pos = pv_location_to_vector(*cmd);
         pos.z = min(current_loc.alt, RTL_ALT_MAX);
         wp_nav.set_destination(pos);
+
+        // initialise original_wp_bearing which is used to check if we have missed the waypoint
+        wp_bearing = wp_nav.get_bearing_to_destination();
+        original_wp_bearing = wp_bearing;
     }else{
         // set landing state
         land_state = LAND_STATE_DESCENDING;
 
-        // switch to loiter which restores horizontal control to pilot
-        // To-Do: check that we are not in failsafe to ensure we don't process bad roll-pitch commands
-        set_roll_pitch_mode(ROLL_PITCH_LOITER);
+        // if we have gps lock, attempt to hold horizontal position
+        if( ap.home_is_set && g_gps->status() == GPS::GPS_OK_FIX_3D ) {
+            // switch to loiter which restores horizontal control to pilot
+            // To-Do: check that we are not in failsafe to ensure we don't process bad roll-pitch commands
+            set_roll_pitch_mode(ROLL_PITCH_LOITER);
+            // switch into loiter nav mode
+            set_nav_mode(NAV_LOITER);
+        }else{
+            // no gps lock so give horizontal control to pilot
+            // To-Do: check that we are not in failsafe to ensure we don't process bad roll-pitch commands
+            set_roll_pitch_mode(ROLL_PITCH_STABLE);
+            // switch into loiter nav mode
+            set_nav_mode(NAV_NONE);
+        }
 
         // hold yaw while landing
         set_yaw_mode(YAW_HOLD);
@@ -330,8 +340,6 @@ static void do_land()
         // set throttle mode to land
         set_throttle_mode(THROTTLE_LAND);
 
-        // switch into loiter nav mode
-        set_nav_mode(NAV_LOITER);
     }
 }
 
@@ -339,6 +347,8 @@ static void do_land()
 // note: caller should set yaw_mode
 static void do_loiter_unlimited()
 {
+    Vector3f target_pos;
+
     // set roll-pitch mode (no pilot input)
     set_roll_pitch_mode(AUTO_RP);
 
@@ -349,26 +359,24 @@ static void do_loiter_unlimited()
     set_yaw_mode(YAW_HOLD);
 
     // get current position
-    // To-Do: change this to projection based on current location and velocity
-    Vector3f curr = inertial_nav.get_position();
-
-    // default to use position provided
-    Vector3f pos = pv_location_to_vector(command_nav_queue);
-
-    // use current altitude if not provided
-    if( command_nav_queue.alt == 0 ) {
-        pos.z = curr.z;
-    }
+    Vector3f curr_pos = inertial_nav.get_position();
 
     // use current location if not provided
     if(command_nav_queue.lat == 0 && command_nav_queue.lng == 0) {
-        pos.x = curr.x;
-        pos.y = curr.y;
+        wp_nav.get_stopping_point(curr_pos,inertial_nav.get_velocity(),target_pos);
+    }else{
+        // default to use position provided
+        target_pos = pv_location_to_vector(command_nav_queue);
+    }
+
+    // use current altitude if not provided
+    if( command_nav_queue.alt == 0 ) {
+        target_pos.z = curr_pos.z;
     }
 
     // start way point navigator and provide it the desired location
     set_nav_mode(NAV_WP);
-    wp_nav.set_destination(pos);
+    wp_nav.set_destination(target_pos);
 }
 
 // do_circle - initiate moving in a circle
@@ -407,6 +415,8 @@ static void do_circle()
 // note: caller should set yaw_mode
 static void do_loiter_time()
 {
+    Vector3f target_pos;
+
     // set roll-pitch mode (no pilot input)
     set_roll_pitch_mode(AUTO_RP);
 
@@ -417,26 +427,24 @@ static void do_loiter_time()
     set_yaw_mode(YAW_HOLD);
 
     // get current position
-    // To-Do: change this to projection based on current location and velocity
-    Vector3f curr = inertial_nav.get_position();
-
-    // default to use position provided
-    Vector3f pos = pv_location_to_vector(command_nav_queue);
-
-    // use current altitude if not provided
-    if( command_nav_queue.alt == 0 ) {
-        pos.z = curr.z;
-    }
+    Vector3f curr_pos = inertial_nav.get_position();
 
     // use current location if not provided
     if(command_nav_queue.lat == 0 && command_nav_queue.lng == 0) {
-        pos.x = curr.x;
-        pos.y = curr.y;
+        wp_nav.get_stopping_point(curr_pos,inertial_nav.get_velocity(),target_pos);
+    }else{
+        // default to use position provided
+        target_pos = pv_location_to_vector(command_nav_queue);
+    }
+
+    // use current altitude if not provided
+    if( command_nav_queue.alt == 0 ) {
+        target_pos.z = curr_pos.z;
     }
 
     // start way point navigator and provide it the desired location
     set_nav_mode(NAV_WP);
-    wp_nav.set_destination(pos);
+    wp_nav.set_destination(target_pos);
 
     // setup loiter timer
     loiter_time     = 0;
@@ -450,12 +458,6 @@ static void do_loiter_time()
 // verify_takeoff - check if we have completed the takeoff
 static bool verify_takeoff()
 {
-    // wait until we are ready!
-    if(g.rc_3.control_in == 0) {
-        // To-Do: reset loiter target if we have not yet taken-off
-        // do not allow I term to build up if we have not yet taken-off
-        return false;
-    }
     // have we reached our target altitude?
     return wp_nav.reached_destination();
 }
@@ -637,7 +639,11 @@ static bool verify_RTL()
                 rtl_loiter_start_time = millis();
 
                 // give pilot back control of yaw
-                set_yaw_mode(YAW_HOLD);
+                if(get_wp_yaw_mode(true) != YAW_HOLD) {
+                    set_yaw_mode(YAW_RESETTOARMEDYAW); // yaw back to initial yaw on take off
+                } else {
+                    set_yaw_mode(YAW_HOLD);
+                }
 
                 // advance to next rtl state
                 rtl_state = RTL_STATE_LOITERING_AT_HOME;
@@ -808,40 +814,38 @@ static bool verify_yaw()
     }
 }
 
-// verify_nav_roi - verifies that actions required by MAV_CMD_NAV_ROI have completed
-//              we assume the camera command has been successfully implemented by the do_nav_roi command
-//              so all we need to check is whether we needed to yaw the copter (due to the mount type) and
-//              whether that yaw has completed
-//	TO-DO: add support for other features of MAV_NAV_ROI including pointing at a given waypoint
-static bool verify_nav_roi()
-{
-#if MOUNT == ENABLED
-    // check if mount type requires us to rotate the quad
-    if( camera_mount.get_mount_type() != AP_Mount::k_pan_tilt && camera_mount.get_mount_type() != AP_Mount::k_pan_tilt_roll ) {
-        // ensure yaw has gotten to within 2 degrees of the target
-        if( labs(wrap_180_cd(ahrs.yaw_sensor-yaw_look_at_WP_bearing)) <= 200 ) {
-            return true;
-        }else{
-            return false;
-        }
-    }else{
-        // if no rotation required, assume the camera instruction was implemented immediately
-        return true;
-    }
-#else
-    // if we have no camera mount simply check we've reached the desired yaw
-    // ensure yaw has gotten to within 2 degrees of the target
-    if( labs(wrap_180_cd(ahrs.yaw_sensor-yaw_look_at_WP_bearing)) <= 200 ) {
-        return true;
-    }else{
-        return false;
-    }
-#endif
-}
-
 /********************************************************************************/
 //	Do (Now) commands
 /********************************************************************************/
+
+// do_guided - start guided mode
+// this is not actually a mission command but rather a 
+static void do_guided(const struct Location *cmd)
+{
+    bool first_time = false;
+    // switch to guided mode if we're not already in guided mode
+    if (control_mode != GUIDED) {
+        set_mode(GUIDED);
+        first_time = true;
+    }
+
+    // set wp_nav's destination
+    Vector3f pos = pv_location_to_vector(*cmd);
+    wp_nav.set_destination(pos);
+
+    // initialise wp_bearing for reporting purposes
+    wp_bearing = wp_nav.get_bearing_to_destination();
+
+    // point nose at next waypoint if it is more than 10m away
+    if (yaw_mode == YAW_LOOK_AT_NEXT_WP) {
+        // get distance to new location
+        wp_distance = wp_nav.get_distance_to_destination();
+        // set original_wp_bearing to point at next waypoint
+        if (wp_distance >= 1000 || first_time) {
+            original_wp_bearing = wp_bearing;
+        }
+    }
+}
 
 static void do_change_speed()
 {
@@ -991,32 +995,31 @@ static void do_repeat_relay()
     update_events();
 }
 
-// do_nav_roi - starts actions required by MAV_CMD_NAV_ROI
-//              this involves either moving the camera to point at the ROI (region of interest)
-//              and possibly rotating the copter to point at the ROI if our mount type does not support a yaw feature
-//				Note: the ROI should already be in the command_nav_queue global variable
-//	TO-DO: add support for other features of MAV_NAV_ROI including pointing at a given waypoint
-static void do_nav_roi()
+// do_roi - starts actions required by MAV_CMD_NAV_ROI
+//          this involves either moving the camera to point at the ROI (region of interest)
+//          and possibly rotating the copter to point at the ROI if our mount type does not support a yaw feature
+//          Note: the ROI should already be in the command_nav_queue global variable
+//	TO-DO: add support for other features of MAV_CMD_DO_SET_ROI including pointing at a given waypoint
+static void do_roi()
 {
 #if MOUNT == ENABLED
-
     // check if mount type requires us to rotate the quad
     if( camera_mount.get_mount_type() != AP_Mount::k_pan_tilt && camera_mount.get_mount_type() != AP_Mount::k_pan_tilt_roll ) {
-        yaw_look_at_WP = pv_location_to_vector(command_nav_queue);
+        yaw_look_at_WP = pv_location_to_vector(command_cond_queue);
         set_yaw_mode(YAW_LOOK_AT_LOCATION);
     }
     // send the command to the camera mount
-    camera_mount.set_roi_cmd(&command_nav_queue);
-
+    camera_mount.set_roi_cmd(&command_cond_queue);
+    
     // TO-DO: expand handling of the do_nav_roi to support all modes of the MAVLink.  Currently we only handle mode 4 (see below)
     //		0: do nothing
     //		1: point at next waypoint
     //		2: point at a waypoint taken from WP# parameter (2nd parameter?)
     //		3: point at a location given by alt, lon, lat parameters
-    //		4: point at a target given a target id (can't be implmented)
+    //		4: point at a target given a target id (can't be implemented)
 #else
     // if we have no camera mount aim the quad at the location
-    yaw_look_at_WP = pv_location_to_vector(command_nav_queue);
+    yaw_look_at_WP = pv_location_to_vector(command_cond_queue);
     set_yaw_mode(YAW_LOOK_AT_LOCATION);
 #endif
 }

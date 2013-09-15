@@ -110,6 +110,8 @@ static void init_ardupilot()
     //
     load_parameters();
 
+    set_control_channels();
+
     // reset the uartA baud rate after parameter load
     hal.uartA->begin(map_baudrate(g.serial0_baud, SERIAL0_BAUD));
 
@@ -156,9 +158,12 @@ static void init_ardupilot()
     }
 #endif
 
- #if CONFIG_ADC == ENABLED
-    adc.Init();      // APM ADC library initialization
+ #if CONFIG_HAL_BOARD == HAL_BOARD_APM1
+    apm1_adc.Init();      // APM ADC library initialization
  #endif
+
+    // initialise airspeed sensor
+    airspeed.init();
 
     if (g.compass_enabled==true) {
         if (!compass.init() || !compass.read()) {
@@ -220,6 +225,7 @@ static void init_ardupilot()
         //read_EEPROM_airstart_critical();
         ahrs.init();
         ahrs.set_fly_forward(true);
+        ahrs.set_wind_estimation(true);
 
         ins.init(AP_InertialSensor::WARM_START, 
                  ins_sample_rate,
@@ -305,10 +311,14 @@ static void startup_ground(void)
     // we don't want writes to the serial port to cause us to pause
     // mid-flight, so set the serial ports non-blocking once we are
     // ready to fly
+    hal.uartA->set_blocking_writes(false);
     hal.uartC->set_blocking_writes(false);
-    if (gcs3.initialised) {
-        hal.uartC->set_blocking_writes(false);
-    }
+
+#if 0
+    // leave GPS blocking until we have support for correct handling
+    // of GPS config in uBlox when non-blocking
+    hal.uartB->set_blocking_writes(false);
+#endif
 
     gcs_send_text_P(SEVERITY_LOW,PSTR("\n\n Ready to FLY."));
 }
@@ -323,7 +333,6 @@ static void set_mode(enum FlightMode mode)
         trim_control_surfaces();
 
     control_mode = mode;
-    crash_timer = 0;
 
     switch(control_mode)
     {
@@ -332,6 +341,17 @@ static void set_mode(enum FlightMode mode)
     case STABILIZE:
     case TRAINING:
     case FLY_BY_WIRE_A:
+        break;
+
+    case ACRO:
+        acro_state.locked_roll = false;
+        acro_state.locked_pitch = false;
+        break;
+
+    case CRUISE:
+        cruise_state.locked_heading = false;
+        cruise_state.lock_timer_ms = 0;
+        target_altitude_cm = current_loc.alt;
         break;
 
     case FLY_BY_WIRE_B:
@@ -370,11 +390,20 @@ static void set_mode(enum FlightMode mode)
     // if in an auto-throttle mode, start with throttle suppressed for
     // safety. suppress_throttle() will unsupress it when appropriate
     if (control_mode == CIRCLE || control_mode >= FLY_BY_WIRE_B) {
+        auto_throttle_mode = true;
         throttle_suppressed = true;
+    } else {
+        auto_throttle_mode = false;        
+        throttle_suppressed = false;
     }
 
     if (g.log_bitmask & MASK_LOG_MODE)
         Log_Write_Mode(control_mode);
+
+    // reset attitude integrators on mode change
+    g.rollController.reset_I();
+    g.pitchController.reset_I();
+    g.yawController.reset_I();    
 }
 
 static void check_long_failsafe()
@@ -383,28 +412,27 @@ static void check_long_failsafe()
     // only act on changes
     // -------------------
     if(failsafe != FAILSAFE_LONG  && failsafe != FAILSAFE_GCS) {
-        if (rc_override_active && tnow - last_heartbeat_ms > FAILSAFE_LONG_TIME) {
+        if (rc_override_active && (tnow - last_heartbeat_ms) > g.long_fs_timeout*1000) {
             failsafe_long_on_event(FAILSAFE_LONG);
-        }
-        if(!rc_override_active && failsafe == FAILSAFE_SHORT && 
-           (tnow - ch3_failsafe_timer) > FAILSAFE_LONG_TIME) {
+        } else if (!rc_override_active && failsafe == FAILSAFE_SHORT && 
+           (tnow - ch3_failsafe_timer) > g.long_fs_timeout*1000) {
             failsafe_long_on_event(FAILSAFE_LONG);
-        }
-        if (g.gcs_heartbeat_fs_enabled && 
+        } else if (g.gcs_heartbeat_fs_enabled && 
             last_heartbeat_ms != 0 &&
-            (tnow - last_heartbeat_ms) > FAILSAFE_LONG_TIME) {
+            (tnow - last_heartbeat_ms) > g.long_fs_timeout*1000) {
             failsafe_long_on_event(FAILSAFE_GCS);
         }
     } else {
         // We do not change state but allow for user to change mode
         if (failsafe == FAILSAFE_GCS && 
-            (tnow - last_heartbeat_ms) < FAILSAFE_SHORT_TIME) 
+            (tnow - last_heartbeat_ms) < g.short_fs_timeout*1000) {
             failsafe = FAILSAFE_NONE;
-        if (failsafe == FAILSAFE_LONG && rc_override_active && 
-            (tnow - last_heartbeat_ms) < FAILSAFE_SHORT_TIME) 
+        } else if (failsafe == FAILSAFE_LONG && rc_override_active && 
+                   (tnow - last_heartbeat_ms) < g.short_fs_timeout*1000) {
             failsafe = FAILSAFE_NONE;
-        if (failsafe == FAILSAFE_LONG && !rc_override_active && !ch3_failsafe) 
+        } else if (failsafe == FAILSAFE_LONG && !rc_override_active && !ch3_failsafe) {
             failsafe = FAILSAFE_NONE;
+        }
     }
 }
 
@@ -448,6 +476,7 @@ static void startup_INS_ground(bool do_accel_init)
 
     ahrs.init();
     ahrs.set_fly_forward(true);
+    ahrs.set_wind_estimation(true);
 
     ins.init(AP_InertialSensor::COLD_START, 
              ins_sample_rate,
@@ -512,7 +541,6 @@ static void resetPerfData(void) {
     ahrs.renorm_range_count         = 0;
     ahrs.renorm_blowup_count = 0;
     gps_fix_count                   = 0;
-    pmTest1                                 = 0;
     perf_mon_timer                  = millis();
 }
 
@@ -602,11 +630,17 @@ print_flight_mode(AP_HAL::BetterStream *port, uint8_t mode)
     case TRAINING:
         port->print_P(PSTR("Training"));
         break;
+    case ACRO:
+        port->print_P(PSTR("ACRO"));
+        break;
     case FLY_BY_WIRE_A:
         port->print_P(PSTR("FBW_A"));
         break;
     case FLY_BY_WIRE_B:
         port->print_P(PSTR("FBW_B"));
+        break;
+    case CRUISE:
+        port->print_P(PSTR("CRUISE"));
         break;
     case AUTO:
         port->print_P(PSTR("AUTO"));
@@ -636,9 +670,8 @@ static void servo_write(uint8_t ch, uint16_t pwm)
 {
 #if HIL_MODE != HIL_MODE_DISABLED
     if (!g.hil_servos) {
-        extern RC_Channel *rc_ch[8];
         if (ch < 8) {
-            rc_ch[ch]->radio_out = pwm;
+            RC_Channel::rc_channel(ch)->radio_out = pwm;
         }
         return;
     }

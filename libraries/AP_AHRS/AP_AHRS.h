@@ -46,19 +46,33 @@ public:
 
     // init sets up INS board orientation
     virtual void init() {
-        _ins->set_board_orientation((enum Rotation)_board_orientation.get());
+        set_orientation();
     };
 
     // Accessors
     void set_fly_forward(bool b) {
         _flags.fly_forward = b;
     }
+
+    void set_wind_estimation(bool b) {
+        _flags.wind_estimation = b;
+    }
+
     void set_compass(Compass *compass) {
         _compass = compass;
+        set_orientation();
+    }
+
+
+    // allow for runtime change of orientation
+    // this makes initial config easier
+    void set_orientation() {
+        _ins->set_board_orientation((enum Rotation)_board_orientation.get());
         if (_compass != NULL) {
             _compass->set_board_orientation((enum Rotation)_board_orientation.get());
         }
     }
+
     void set_airspeed(AP_Airspeed *airspeed) {
         _airspeed = airspeed;
     }
@@ -82,10 +96,6 @@ public:
     int32_t roll_sensor;
     int32_t pitch_sensor;
     int32_t yaw_sensor;
-
-    // roll and pitch rates in earth frame, in radians/s
-    float get_pitch_rate_earth(void) const;
-    float get_roll_rate_earth(void) const;
 
     // return a smoothed and corrected gyro vector
     virtual const Vector3f get_gyro(void) const = 0;
@@ -127,6 +137,10 @@ public:
         return true;
     }
 
+    // get our projected position, based on our GPS position plus
+    // heading and ground speed
+    bool get_projected_position(struct Location *loc);
+
     // return a wind estimation vector, in m/s
     virtual Vector3f wind_estimate(void) {
         return Vector3f(0,0,0);
@@ -135,6 +149,12 @@ public:
     // return an airspeed estimate if available. return true
     // if we have an estimate
     virtual bool airspeed_estimate(float *airspeed_ret);
+
+    // return true if airspeed comes from an airspeed sensor, as
+    // opposed to an IMU estimate
+    bool airspeed_sensor_enabled(void) const {
+        return _airspeed != NULL && _airspeed->use();
+    }
 
     // return a ground vector estimate in meters/second, in North/East order
     Vector2f groundspeed_vector(void);
@@ -191,6 +211,7 @@ protected:
         uint8_t fast_ground_gains       : 1;    // should we raise the gain on the accelerometers for faster convergence, used when disarmed for ArduCopter
         uint8_t fly_forward             : 1;    // 1 if we can assume the aircraft will be flying forward on its X axis
         uint8_t correct_centrifugal     : 1;    // 1 if we should correct for centrifugal forces (allows arducopter to turn this off when motors are disarmed)
+        uint8_t wind_estimation         : 1;    // 1 if we should do wind estimation
     } _flags;
 
     // pointer to compass object, if available

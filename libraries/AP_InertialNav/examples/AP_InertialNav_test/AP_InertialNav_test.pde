@@ -1,4 +1,4 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: t -*-
+// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 
 #include <AP_Common.h>
 #include <AP_Progmem.h>
@@ -9,6 +9,7 @@
 
 #include <AP_GPS.h>             // ArduPilot GPS library
 #include <AP_ADC.h>             // ArduPilot Mega Analog to Digital Converter Library
+#include <AP_ADC_AnalogSource.h>
 #include <AP_Baro.h>            // ArduPilot Mega Barometer Library
 #include <Filter.h>
 #include <AP_Compass.h>         // ArduPilot Mega Magnetometer Library

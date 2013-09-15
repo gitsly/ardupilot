@@ -24,6 +24,7 @@ const AP_Param::GroupInfo AP_AHRS::var_info[] PROGMEM = {
     // @Param: GPS_USE
     // @DisplayName: AHRS use GPS for navigation
     // @Description: This controls whether to use dead-reckoning or GPS based navigation. If set to 0 then the GPS won't be used for navigation, and only dead reckoning will be used. A value of zero should never be used for normal flight.
+    // @Values: 0:Disabled,1:Enabled
     // @User: Advanced
     AP_GROUPINFO("GPS_USE",  3, AP_AHRS, _gps_use, 1),
 
@@ -55,25 +56,28 @@ const AP_Param::GroupInfo AP_AHRS::var_info[] PROGMEM = {
     // @DisplayName: AHRS Trim Roll
     // @Description: Compensates for the roll angle difference between the control board and the frame
     // @Units: Radians
+    // @Range: -10 10
     // @User: Advanced
 
     // @Param: TRIM_Y
     // @DisplayName: AHRS Trim Pitch
     // @Description: Compensates for the pitch angle difference between the control board and the frame
     // @Units: Radians
+    // @Range: -10 10
     // @User: Advanced
 
     // @Param: TRIM_Z
     // @DisplayName: AHRS Trim Yaw
     // @Description: Not Used
     // @Units: Radians
+    // @Range: -10 10
     // @User: Advanced
     AP_GROUPINFO("TRIM", 8, AP_AHRS, _trim, 0),
 
     // @Param: ORIENTATION
     // @DisplayName: Board Orientation
     // @Description: Overall board orientation relative to the standard orientation for the board type. This rotates the IMU and compass readings to allow the board to be oriented in your vehicle at any 90 or 45 degree angle. This option takes affect on next boot. After changing you will need to re-level your vehicle.
-    // @Values: 0:None,1:Yaw45,2:Yaw90,3:Yaw135,4:Yaw180,5:Yaw225,6:Yaw270,7:Yaw315,8:Roll180,9:Roll180Yaw45,10:Roll180Yaw90,11:Roll180Yaw135,12:Pitch180,13:Roll180Yaw225,14:Roll180Yaw270,15:Roll180Yaw315,16:Roll90,17:Roll90Yaw45,18:Roll90Yaw135,19:Roll270,20:Roll270Yaw45,21:Roll270Yaw90,22:Roll270Yaw136,23:Pitch90,24:Pitch270
+    // @Values: 0:None,1:Yaw45,2:Yaw90,3:Yaw135,4:Yaw180,5:Yaw225,6:Yaw270,7:Yaw315,8:Roll180,9:Roll180Yaw45,10:Roll180Yaw90,11:Roll180Yaw135,12:Pitch180,13:Roll180Yaw225,14:Roll180Yaw270,15:Roll180Yaw315,16:Roll90,17:Roll90Yaw45,18:Roll90Yaw90,19:Roll90Yaw135,20:Roll270,21:Roll270Yaw45,22:Roll270Yaw90,23:Roll270Yaw135,24:Pitch90,25:Pitch270
     // @User: Advanced
     AP_GROUPINFO("ORIENTATION", 9, AP_AHRS, _board_orientation, 0),
 
@@ -82,30 +86,19 @@ const AP_Param::GroupInfo AP_AHRS::var_info[] PROGMEM = {
     // @Description: This controls the time constant for the cross-over frequency used to fuse AHRS (airspeed and heading) and GPS data to estimate ground velocity. Time constant is 0.1/beta. A larger time constant will use GPS data less and a small time constant will use air data less.
     // @Range: 0.001 0.5
     // @Increment: .01
+    // @User: Advanced
     AP_GROUPINFO("COMP_BETA",  10, AP_AHRS, beta, 0.1f),
 
     // @Param: GPS_MINSATS
     // @DisplayName: AHRS GPS Minimum satellites
     // @Description: Minimum number of satellites visible to use GPS for velocity based corrections attitude correction. This defaults to 6, which is about the point at which the velocity numbers from a GPS become too unreliable for accurate correction of the accelerometers.
     // @Range: 0 10
+    // @Increment: 1
     // @User: Advanced
     AP_GROUPINFO("GPS_MINSATS", 11, AP_AHRS, _gps_minsats, 6),
 
     AP_GROUPEND
 };
-
-// get pitch rate in earth frame, in radians/s
-float AP_AHRS::get_pitch_rate_earth(void) const
-{
-	Vector3f omega = get_gyro();
-	return cosf(roll) * omega.y - sinf(roll) * omega.z;
-}
-
-// get roll rate in earth frame, in radians/s
-float AP_AHRS::get_roll_rate_earth(void) const {
-	Vector3f omega = get_gyro();
-	return omega.x + tanf(pitch)*(omega.y*sinf(roll) + omega.z*cosf(roll));
-}
 
 // return airspeed estimate if available
 bool AP_AHRS::airspeed_estimate(float *airspeed_ret)
@@ -113,11 +106,12 @@ bool AP_AHRS::airspeed_estimate(float *airspeed_ret)
 	if (_airspeed && _airspeed->use()) {
 		*airspeed_ret = _airspeed->get_airspeed();
 		if (_wind_max > 0 && _gps && _gps->status() >= GPS::GPS_OK_FIX_2D) {
-			// constrain the airspeed by the ground speed
-			// and AHRS_WIND_MAX
-			*airspeed_ret = constrain_float(*airspeed_ret, 
-						  _gps->ground_speed*0.01f - _wind_max, 
-						  _gps->ground_speed*0.01f + _wind_max);
+                    // constrain the airspeed by the ground speed
+                    // and AHRS_WIND_MAX
+                    float gnd_speed = _gps->ground_speed_cm*0.01f;
+                    *airspeed_ret = constrain_float(*airspeed_ret, 
+                                                    gnd_speed - _wind_max, 
+                                                    gnd_speed + _wind_max);
 		}
 		return true;
 	}
@@ -154,7 +148,7 @@ void AP_AHRS::add_trim(float roll_in_radians, float pitch_in_radians, bool save_
 // correct a bearing in centi-degrees for wind
 void AP_AHRS::wind_correct_bearing(int32_t &nav_bearing_cd)
 {
-	if (!use_compass()) {
+	if (!use_compass() || !_flags.wind_estimation) {
 		// we are not using the compass - no wind correction,
 		// as GPS gives course over ground already
 		return;
@@ -190,8 +184,8 @@ Vector2f AP_AHRS::groundspeed_vector(void)
     
     // Generate estimate of ground speed vector using GPS
     if (gotGPS) {
-	    float cog = radians(_gps->ground_course*0.01f);
-	    gndVelGPS = Vector2f(cosf(cog), sinf(cog)) * _gps->ground_speed * 0.01f;
+	    float cog = radians(_gps->ground_course_cd*0.01f);
+	    gndVelGPS = Vector2f(cosf(cog), sinf(cog)) * _gps->ground_speed_cm * 0.01f;
     }
     // If both ADS and GPS data is available, apply a complementary filter
     if (gotAirspeed && gotGPS) {
@@ -223,4 +217,16 @@ Vector2f AP_AHRS::groundspeed_vector(void)
 	    return gndVelGPS;
     }
     return Vector2f(0.0f, 0.0f);
+}
+
+/*
+  get position projected by groundspeed and heading
+ */
+bool AP_AHRS::get_projected_position(struct Location *loc)
+{
+        if (!get_position(loc)) {
+		return false;
+        }
+        location_update(loc, degrees(yaw), _gps->ground_speed_cm * 0.01 * _gps->get_lag());
+        return true;
 }

@@ -2,7 +2,8 @@
 
 import util, pexpect, sys, time, math, shutil, os
 from common import *
-import mavutil, random
+from pymavlink import mavutil
+import random
 
 # get location of scripts
 testdir=os.path.dirname(os.path.realpath(__file__))
@@ -145,11 +146,11 @@ def axial_left_roll(mavproxy, mav, count=1):
     while count > 0:
         print("Starting roll")
         mavproxy.send('rc 1 1000\n')
-        if not wait_roll(mav, -150, accuracy=20):
+        if not wait_roll(mav, -150, accuracy=45):
             return False
-        if not wait_roll(mav, 150, accuracy=20):
+        if not wait_roll(mav, 150, accuracy=45):
             return False
-        if not wait_roll(mav, 0, accuracy=20):
+        if not wait_roll(mav, 0, accuracy=45):
             return False
         count -= 1
 
@@ -228,7 +229,7 @@ def fly_ArduPlane(viewerip=None, map=False):
     if viewerip:
         options += " --out=%s:14550" % viewerip
     if map:
-        options += ' --map --console'
+        options += ' --map'
 
     sil = util.start_SIL('ArduPlane', wipe=True)
     mavproxy = util.start_MAVProxy_SIL('ArduPlane', options=options)
@@ -263,7 +264,10 @@ def fly_ArduPlane(viewerip=None, map=False):
     print("buildlog=%s" % buildlog)
     if os.path.exists(buildlog):
         os.unlink(buildlog)
-    os.link(logfile, buildlog)
+    try:
+        os.link(logfile, buildlog)
+    except Exception:
+        pass
 
     mavproxy.expect('Received [0-9]+ parameters')
 

@@ -1,8 +1,16 @@
-# fly ArduCopter in SIL
+# fly ArduCopter in SITL
+# Flight mode switch positions are set-up in arducopter.param to be
+#   switch 1 = Circle
+#   switch 2 = Land
+#   switch 3 = RTL
+#   switch 4 = Auto
+#   switch 5 = Loiter
+#   switch 6 = Stabilize
 
 import util, pexpect, sys, time, math, shutil, os
 from common import *
-import mavutil, mavwp, random
+from pymavlink import mavutil, mavwp
+import random
 
 # get location of scripts
 testdir=os.path.dirname(os.path.realpath(__file__))
@@ -10,6 +18,7 @@ testdir=os.path.dirname(os.path.realpath(__file__))
 FRAME='+'
 TARGET='sitl'
 HOME=mavutil.location(-35.362938,149.165085,584,270)
+AVCHOME=mavutil.location(40.072842,-105.230575,1586,0)
 
 homeloc = None
 num_wp = 0
@@ -34,6 +43,7 @@ def arm_motors(mavproxy, mav):
     mavproxy.send('rc 4 2000\n')
     mavproxy.expect('APM: ARMING MOTORS')
     mavproxy.send('rc 4 1500\n')
+    mav.motors_armed_wait()
     print("MOTORS ARMED OK")
     return True
 
@@ -41,10 +51,12 @@ def disarm_motors(mavproxy, mav):
     '''disarm motors'''
     print("Disarming motors")
     mavproxy.send('switch 6\n') # stabilize mode
+    wait_mode(mav, 'STABILIZE')
     mavproxy.send('rc 3 1000\n')
     mavproxy.send('rc 4 1000\n')
     mavproxy.expect('APM: DISARMING MOTORS')
     mavproxy.send('rc 4 1500\n')
+    mav.motors_disarmed_wait()
     print("MOTORS DISARMED OK")
     return True
 
@@ -242,25 +254,142 @@ def fly_throttle_failsafe(mavproxy, mav, side=60, timeout=180):
     # pull throttle low
     print("# Enter Failsafe")
     mavproxy.send('rc 3 900\n')
+
     tstart = time.time()
     while time.time() < tstart + timeout:
         m = mav.recv_match(type='VFR_HUD', blocking=True)
         pos = mav.location()
         home_distance = get_distance(HOME, pos)
         print("Alt: %u  HomeDistance: %.0f" % (m.alt, home_distance))
+        # check if we've reached home
         if m.alt <= 1 and home_distance < 10:
-            # switch modes to reset out of LAND
-            mavproxy.send('switch 2\n')
-            time.sleep(1)
-            mavproxy.send('switch 6\n')
-            print("Reached failsafe home OK")
+            # reduce throttle
             mavproxy.send('rc 3 1100\n')
+            # switch back to stabilize
+            mavproxy.send('switch 2\n') # land mode
+            wait_mode(mav, 'LAND')
+            mavproxy.send('switch 6\n') # stabilize mode
+            wait_mode(mav, 'STABILIZE')
+            print("Reached failsafe home OK")
             return True
     print("Failed to land on failsafe RTL - timed out after %u seconds" % timeout)
-    # switch modes to reset out of LAND
-    mavproxy.send('switch 2\n')
-    time.sleep(1)
-    mavproxy.send('switch 6\n')
+    # reduce throttle
+    mavproxy.send('rc 3 1100\n')
+    # switch back to stabilize mode
+    mavproxy.send('switch 2\n') # land mode
+    wait_mode(mav, 'LAND')
+    mavproxy.send('switch 6\n') # stabilize mode
+    wait_mode(mav, 'STABILIZE')
+    return False
+
+# fly_stability_patch - fly south, then hold loiter within 5m position and altitude and reduce 1 motor to 60% efficiency
+def fly_stability_patch(mavproxy, mav, holdtime=30, maxaltchange=5, maxdistchange=10):
+    '''hold loiter position'''
+    mavproxy.send('switch 5\n') # loiter mode
+    wait_mode(mav, 'LOITER')
+
+    # first south
+    print("turn south")
+    mavproxy.send('rc 4 1580\n')
+    if not wait_heading(mav, 180):
+        return False
+    mavproxy.send('rc 4 1500\n')
+
+    #fly west 80m
+    mavproxy.send('rc 2 1100\n')
+    if not wait_distance(mav, 80):
+        return False
+    mavproxy.send('rc 2 1500\n')
+
+    # wait for copter to slow moving
+    if not wait_groundspeed(mav, 0, 2):
+        return False
+
+    m = mav.recv_match(type='VFR_HUD', blocking=True)
+    start_altitude = m.alt
+    start = mav.location()
+    tstart = time.time()
+    tholdstart = time.time()
+    print("Holding loiter at %u meters for %u seconds" % (start_altitude, holdtime))
+
+    # cut motor 1 to 55% efficiency
+    print("Cutting motor 1 to 55% efficiency")
+    mavproxy.send('param set SIM_ENGINE_MUL 0.55\n')
+
+    while time.time() < tstart + holdtime:
+        m = mav.recv_match(type='VFR_HUD', blocking=True)
+        pos = mav.location()
+        delta = get_distance(start, pos)
+        print("Loiter Dist: %.2fm, alt:%u" % (delta, m.alt))
+        if math.fabs(m.alt - start_altitude) > maxaltchange:
+            tholdstart = time.time()    # this will cause this test to timeout and fails
+        if delta > maxdistchange:
+            tholdstart = time.time()    # this will cause this test to timeout and fails
+        if time.time() - tholdstart > holdtime:
+            print("Stability patch and Loiter OK for %u seconds" % holdtime)
+            # restore motor 1 to 100% efficiency
+            mavproxy.send('param set SIM_ENGINE_MUL 1.0\n')
+            return True
+    print("Stability Patch FAILED")
+    # restore motor 1 to 100% efficiency
+    mavproxy.send('param set SIM_ENGINE_MUL 1.0\n')
+    return False
+
+# fly_fence_test - fly east until you hit the horizontal circular fence
+def fly_fence_test(mavproxy, mav, timeout=180):
+    '''hold loiter position'''
+    mavproxy.send('switch 5\n') # loiter mode
+    wait_mode(mav, 'LOITER')
+
+    # enable fence
+    mavproxy.send('param set FENCE_ENABLE 1\n')
+
+    # first east
+    print("turn east")
+    mavproxy.send('rc 4 1580\n')
+    if not wait_heading(mav, 160):
+        return False
+    mavproxy.send('rc 4 1500\n')
+
+    # fly forward (east) at least 20m
+    pitching_forward = True
+    mavproxy.send('rc 2 1100\n')
+    if not wait_distance(mav, 20):
+        return False
+
+    # start timer
+    tstart = time.time()
+    while time.time() < tstart + timeout:
+        m = mav.recv_match(type='VFR_HUD', blocking=True)
+        pos = mav.location()
+        home_distance = get_distance(HOME, pos)
+        print("Alt: %u  HomeDistance: %.0f" % (m.alt, home_distance))
+        # recenter pitch sticks once we reach home so we don't fly off again
+        if pitching_forward and home_distance < 10 :
+            pitching_forward = False
+            mavproxy.send('rc 2 1500\n')
+            # disable fence
+            mavproxy.send('param set FENCE_ENABLE 0\n')
+        if m.alt <= 1 and home_distance < 10:
+            # reduce throttle
+            mavproxy.send('rc 3 1000\n')
+            # switch mode to stabilize
+            mavproxy.send('switch 2\n') # land mode
+            wait_mode(mav, 'LAND')
+            mavproxy.send('switch 6\n') # stabilize mode
+            wait_mode(mav, 'STABILIZE')
+            print("Reached home OK")
+            return True
+    # disable fence
+    mavproxy.send('param set FENCE_ENABLE 0\n')
+    # reduce throttle
+    mavproxy.send('rc 3 1000\n')
+    # switch mode to stabilize
+    mavproxy.send('switch 2\n') # land mode
+    wait_mode(mav, 'LAND')
+    mavproxy.send('switch 6\n') # stabilize mode
+    wait_mode(mav, 'STABILIZE')
+    print("Fence test failed to reach home - timed out after %u seconds" % timeout)
     return False
 
 #fly_simple - assumes the simple bearing is initialised to be directly north
@@ -270,7 +399,7 @@ def fly_simple(mavproxy, mav, side=100, timeout=120):
     #set SIMPLE mode
     mavproxy.send('param set SIMPLE 63\n')
 
-    '''fly Simple, flying N then E'''
+    # switch to stabilize mode
     mavproxy.send('switch 6\n')
     wait_mode(mav, 'STABILIZE')
     mavproxy.send('rc 3 1400\n')
@@ -319,35 +448,57 @@ def fly_simple(mavproxy, mav, side=100, timeout=120):
     hover(mavproxy, mav)
     return not failed
 
+#fly_circle - flies a circle with 20m radius
+def fly_circle(mavproxy, mav, maxaltchange=10, holdtime=36):
 
-def land(mavproxy, mav, timeout=60):
-    '''land the quad'''
-    print("STARTING LANDING")
-    mavproxy.send('switch 2\n')
-    wait_mode(mav, 'LAND')
-    print("Entered Landing Mode")
-    ret = wait_altitude(mav, -5, 1)
-    print("LANDING: ok= %s" % ret)
-    return ret
+    # hold position in loiter
+    mavproxy.send('switch 5\n') # loiter mode
+    wait_mode(mav, 'LOITER')
 
+    # face west
+    print("turn west")
+    mavproxy.send('rc 4 1580\n')
+    if not wait_heading(mav, 270):
+        return False
+    mavproxy.send('rc 4 1500\n')
 
-def circle(mavproxy, mav, maxaltchange=10, holdtime=90, timeout=35):
-    '''fly circle'''
-    print("FLY CIRCLE")
-    mavproxy.send('switch 1\n') # CIRCLE mode
+    #set CIRCLE radius
+    mavproxy.send('param set CIRCLE_RADIUS 30\n')
+
+    # fly forward (east) at least 100m
+    mavproxy.send('rc 2 1100\n')
+    if not wait_distance(mav, 100):
+        return False
+
+    # return pitch stick back to middle
+    mavproxy.send('rc 2 1500\n')
+
+    # set CIRCLE mode
+    mavproxy.send('switch 1\n') # circle mode
     wait_mode(mav, 'CIRCLE')
+
+    # wait 
     m = mav.recv_match(type='VFR_HUD', blocking=True)
     start_altitude = m.alt
     tstart = time.time()
     tholdstart = time.time()
     print("Circle at %u meters for %u seconds" % (start_altitude, holdtime))
-    while time.time() < tstart + timeout:
+    while time.time() < tstart + holdtime:
         m = mav.recv_match(type='VFR_HUD', blocking=True)
         print("heading %u" % m.heading)
 
     print("CIRCLE OK for %u seconds" % holdtime)
     return True
 
+def land(mavproxy, mav, timeout=60):
+    '''land the quad'''
+    print("STARTING LANDING")
+    mavproxy.send('switch 2\n') # land mode
+    wait_mode(mav, 'LAND')
+    print("Entered Landing Mode")
+    ret = wait_altitude(mav, -5, 1)
+    print("LANDING: ok= %s" % ret)
+    return ret
 
 def fly_mission(mavproxy, mav, height_accuracy=-1, target_altitude=None):
     '''fly a mission from a file'''
@@ -361,16 +512,9 @@ def fly_mission(mavproxy, mav, height_accuracy=-1, target_altitude=None):
     ret = wait_waypoint(mav, 0, num_wp, timeout=500, mode='AUTO')
     print("test: MISSION COMPLETE: passed=%s" % ret)
     # wait here until ready
-    mavproxy.send('switch 5\n')
+    mavproxy.send('switch 5\n') # loiter mode
     wait_mode(mav, 'LOITER')
-
     return ret
-
-    #if not wait_distance(mav, 30, timeout=120):
-    #    return False
-    #if not wait_location(mav, homeloc, timeout=600, target_altitude=target_altitude, height_accuracy=height_accuracy):
-    #    return False
-
 
 def load_mission_from_file(mavproxy, mav, filename):
     '''load a mission from a file'''
@@ -444,7 +588,7 @@ def fly_ArduCopter(viewerip=None, map=False):
     if viewerip:
         options += ' --out=%s:14550' % viewerip
     if map:
-        options += ' --map --console'
+        options += ' --map'
     mavproxy = util.start_MAVProxy_SIL('ArduCopter', options=options)
     mavproxy.expect('Logging to (\S+)')
     logfile = mavproxy.match.group(1)
@@ -454,7 +598,10 @@ def fly_ArduCopter(viewerip=None, map=False):
     print("buildlog=%s" % buildlog)
     if os.path.exists(buildlog):
         os.unlink(buildlog)
-    os.link(logfile, buildlog)
+    try:
+        os.link(logfile, buildlog)
+    except Exception:
+        pass
 
     # the received parameters can come before or after the ready to fly message
     mavproxy.expect(['Received [0-9]+ parameters', 'Ready to FLY'])
@@ -497,7 +644,7 @@ def fly_ArduCopter(viewerip=None, map=False):
         if not takeoff(mavproxy, mav, 10):
             print("takeoff failed")
             failed = True
-        
+
         # Fly a square in Stabilize mode
         print("#")
         print("########## Fly A square and save WPs with CH7 switch ##########")
@@ -541,9 +688,43 @@ def fly_ArduCopter(viewerip=None, map=False):
             print("takeoff failed")
             failed = True
 
+        # Stability patch
+        print("#")
+        print("########## Test Stability Patch ##########")
+        print("#")
+        if not fly_stability_patch(mavproxy, mav, 30):
+            print("Stability Patch failed")
+            failed = True
+
+        # RTL
+        print("# RTL #")
+        if not fly_RTL(mavproxy, mav):
+            print("RTL failed")
+            failed = True
+
+        # Takeoff
+        print("# Takeoff")
+        if not takeoff(mavproxy, mav, 10):
+            print("takeoff failed")
+            failed = True
+
+        # Fence test
+        print("#")
+        print("########## Test Horizontal Fence ##########")
+        print("#")
+        if not fly_fence_test(mavproxy, mav, 180):
+            print("Fence test failed")
+            failed = True
+
+        # Takeoff
+        print("# Takeoff")
+        if not takeoff(mavproxy, mav, 10):
+            print("takeoff failed")
+            failed = True
+
         # Loiter for 30 seconds
         print("#")
-        print("########## Test Loiter for 40 seconds ##########")
+        print("########## Test Loiter for 30 seconds ##########")
         print("#")
         if not loiter(mavproxy, mav, 30):
             print("loiter failed")
@@ -597,6 +778,26 @@ def fly_ArduCopter(viewerip=None, map=False):
             print("RTL failed")
             failed = True
 
+        # Takeoff
+        print("# Takeoff")
+        if not takeoff(mavproxy, mav, 10):
+            print("takeoff failed")
+            failed = True
+
+        # Circle mode
+        print("# Fly CIRCLE mode")
+        if not fly_circle(mavproxy, mav):
+            print("fly_circle failed")
+            failed = True
+
+        # RTL
+        print("#")
+        print("########## Test RTL ##########")
+        print("#")
+        if not fly_RTL(mavproxy, mav):
+            print("RTL failed")
+            failed = True
+
         # Fly mission #1
         print("# Upload mission1")
         if not upload_mission_from_file(mavproxy, mav, os.path.join(testdir, "mission1.txt")):
@@ -633,6 +834,141 @@ def fly_ArduCopter(viewerip=None, map=False):
     if os.path.exists('ArduCopter-valgrind.log'):
         os.chmod('ArduCopter-valgrind.log', 0644)
         shutil.copy("ArduCopter-valgrind.log", util.reltopdir("../buildlogs/ArduCopter-valgrind.log"))
+
+    if failed:
+        print("FAILED: %s" % e)
+        return False
+    return True
+
+
+def fly_CopterAVC(viewerip=None, map=False):
+    '''fly ArduCopter in SIL for AVC2013 mission
+    '''
+    global homeloc
+
+    if TARGET != 'sitl':
+        util.build_SIL('ArduCopter', target=TARGET)
+
+    sim_cmd = util.reltopdir('Tools/autotest/pysim/sim_multicopter.py') + ' --frame=%s --rate=400 --home=%f,%f,%u,%u' % (
+        FRAME, AVCHOME.lat, AVCHOME.lng, AVCHOME.alt, AVCHOME.heading)
+    if viewerip:
+        sim_cmd += ' --fgout=%s:5503' % viewerip
+
+    sil = util.start_SIL('ArduCopter', wipe=True)
+    mavproxy = util.start_MAVProxy_SIL('ArduCopter', options='--sitl=127.0.0.1:5501 --out=127.0.0.1:19550 --quadcopter')
+    mavproxy.expect('Received [0-9]+ parameters')
+
+    # setup test parameters
+    mavproxy.send('param set SYSID_THISMAV %u\n' % random.randint(100, 200))
+    mavproxy.send("param load %s/CopterAVC.parm\n" % testdir)
+    mavproxy.expect('Loaded [0-9]+ parameters')
+
+    # reboot with new parameters
+    util.pexpect_close(mavproxy)
+    util.pexpect_close(sil)
+
+    sil = util.start_SIL('ArduCopter', height=HOME.alt)
+    sim = pexpect.spawn(sim_cmd, logfile=sys.stdout, timeout=10)
+    sim.delaybeforesend = 0
+    util.pexpect_autoclose(sim)
+    options = '--sitl=127.0.0.1:5501 --out=127.0.0.1:19550 --quadcopter --streamrate=5'
+    if viewerip:
+        options += ' --out=%s:14550' % viewerip
+    if map:
+        options += ' --map'
+    mavproxy = util.start_MAVProxy_SIL('ArduCopter', options=options)
+    mavproxy.expect('Logging to (\S+)')
+    logfile = mavproxy.match.group(1)
+    print("LOGFILE %s" % logfile)
+
+    buildlog = util.reltopdir("../buildlogs/CopterAVC-test.tlog")
+    print("buildlog=%s" % buildlog)
+    if os.path.exists(buildlog):
+        os.unlink(buildlog)
+    try:
+        os.link(logfile, buildlog)
+    except Exception:
+        pass
+
+    # the received parameters can come before or after the ready to fly message
+    mavproxy.expect(['Received [0-9]+ parameters', 'Ready to FLY'])
+    mavproxy.expect(['Received [0-9]+ parameters', 'Ready to FLY'])
+
+    util.expect_setup_callback(mavproxy, expect_callback)
+
+    expect_list_clear()
+    expect_list_extend([sim, sil, mavproxy])
+
+    if map:
+        mavproxy.send('map icon 40.072467969730496 -105.2314389590174\n')
+        mavproxy.send('map icon 40.072600990533829 -105.23146100342274\n')        
+
+    # get a mavlink connection going
+    try:
+        mav = mavutil.mavlink_connection('127.0.0.1:19550', robust_parsing=True)
+    except Exception, msg:
+        print("Failed to start mavlink connection on 127.0.0.1:19550" % msg)
+        raise
+    mav.message_hooks.append(message_hook)
+    mav.idle_hooks.append(idle_hook)
+
+
+    failed = False
+    e = 'None'
+    try:
+        mav.wait_heartbeat()
+        setup_rc(mavproxy)
+        homeloc = mav.location()
+
+        print("# Calibrate level")
+        if not calibrate_level(mavproxy, mav):
+            print("calibrate_level failed")
+            failed = True
+
+        # Arm
+        print("# Arm motors")
+        if not arm_motors(mavproxy, mav):
+            print("arm_motors failed")
+            failed = True
+
+        # Fly mission #1
+        print("# Upload AVC mission")
+        if not upload_mission_from_file(mavproxy, mav, os.path.join(testdir, "AVC2013.txt")):
+            print("upload_mission_from_file failed")
+            failed = True
+
+        # this grabs our mission count
+        print("# store mission1 locally")
+        if not load_mission_from_file(mavproxy, mav, os.path.join(testdir, "AVC2013.txt")):
+            print("load_mission_from_file failed")
+            failed = True
+
+        print("# raising throttle")
+        mavproxy.send('rc 3 1300\n')
+
+        print("# Fly mission 1")
+        if not fly_mission(mavproxy, mav,height_accuracy = 0.5, target_altitude=10):
+            print("fly_mission failed")
+            failed = True
+        else:
+            print("Flew mission 1 OK")
+
+        print("# lowering throttle")
+        mavproxy.send('rc 3 1000\n')
+
+        #mission includes LAND at end so should be ok to disamr
+        print("# disarm motors")
+        if not disarm_motors(mavproxy, mav):
+            print("disarm_motors failed")
+            failed = True
+
+    except pexpect.TIMEOUT, e:
+        failed = True
+
+    mav.close()
+    util.pexpect_close(mavproxy)
+    util.pexpect_close(sil)
+    util.pexpect_close(sim)
 
     if failed:
         print("FAILED: %s" % e)

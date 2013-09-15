@@ -1,3 +1,4 @@
+// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
  *       AP_MotorsTri.cpp - ArduCopter motors library
  *       Code by RandyMackay. DIYDrones.com
@@ -21,6 +22,11 @@ void AP_MotorsTri::Init()
 
     // set update rate for the 3 motors (but not the servo on channel 7)
     set_update_rate(_speed_hz);
+
+    // set the motor_enabled flag so that the ESCs can be calibrated like other frame types
+    motor_enabled[AP_MOTORS_MOT_1] = true;
+    motor_enabled[AP_MOTORS_MOT_2] = true;
+    motor_enabled[AP_MOTORS_MOT_4] = true;
 }
 
 // set update rate to motors - a value in hertz
@@ -166,17 +172,17 @@ void AP_MotorsTri::output_test()
 
     hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_2], _rc_throttle->radio_min);
     hal.scheduler->delay(4000);
-    hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_1], _rc_throttle->radio_min + 100);
+    hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_1], _rc_throttle->radio_min + _min_throttle);
     hal.scheduler->delay(300);
 
     hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_1], _rc_throttle->radio_min);
     hal.scheduler->delay(2000);
-    hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_4], _rc_throttle->radio_min + 100);
+    hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_4], _rc_throttle->radio_min + _min_throttle);
     hal.scheduler->delay(300);
 
     hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_4], _rc_throttle->radio_min);
     hal.scheduler->delay(2000);
-    hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_2], _rc_throttle->radio_min + 100);
+    hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_2], _rc_throttle->radio_min + _min_throttle);
     hal.scheduler->delay(300);
 
     hal.rcout->write(_motor_to_channel_map[AP_MOTORS_MOT_1], motor_out[AP_MOTORS_MOT_1]);

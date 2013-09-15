@@ -87,6 +87,10 @@ public:
         k_param_nav_controller,
         k_param_elevon_output,
         k_param_att_controller,
+        k_param_mixing_gain,
+        k_param_scheduler,
+        k_param_relay,
+        k_param_takeoff_throttle_delay,
 
         // 110: Telemetry control
         //
@@ -106,6 +110,8 @@ public:
         k_param_flybywire_elev_reverse,
         k_param_alt_control_algorithm,
         k_param_flybywire_climb_rate,
+        k_param_acro_roll_rate,
+        k_param_acro_pitch_rate,
 
         //
         // 130: Sensor parameters
@@ -158,10 +164,10 @@ public:
         //
         // 170: Radio settings
         //
-        k_param_channel_roll = 170,
-        k_param_channel_pitch,
-        k_param_channel_throttle,
-        k_param_channel_rudder,
+        k_param_rc_1 = 170,
+        k_param_rc_2,
+        k_param_rc_3,
+        k_param_rc_4,
         k_param_rc_5,
         k_param_rc_6,
         k_param_rc_7,
@@ -183,11 +189,15 @@ public:
         k_param_throttle_suppress_manual,
         k_param_throttle_passthru_stabilize,
         k_param_rc_12,
+        k_param_fs_batt_voltage,
+        k_param_fs_batt_mah,
+        k_param_short_fs_timeout,
+        k_param_long_fs_timeout,
 
         //
         // 200: Feed-forward gains
         //
-        k_param_kff_pitch_compensation = 200,
+        k_param_kff_pitch_compensation = 200, // unused
         k_param_kff_rudder_mix,
         k_param_kff_pitch_to_throttle,
         k_param_kff_throttle_to_pitch,
@@ -225,12 +235,14 @@ public:
         k_param_pitchController,
         k_param_yawController,
         k_param_L1_controller,
+        k_param_rcmap,
+        k_param_TECS_controller,
 
         //
         // 240: PID Controllers
         k_param_pidNavRoll = 240, // unused
-        k_param_pidServoRoll,
-        k_param_pidServoPitch,
+        k_param_pidServoRoll, // unused
+        k_param_pidServoPitch, // unused
         k_param_pidNavPitchAirspeed,
         k_param_pidServoRudder,
         k_param_pidTeThrottle,
@@ -253,7 +265,6 @@ public:
 
     // Feed-forward gains
     //
-    AP_Float kff_pitch_compensation;
     AP_Float kff_rudder_mix;
     AP_Float kff_pitch_to_throttle;
     AP_Float kff_throttle_to_pitch;
@@ -287,27 +298,25 @@ public:
 
     // Fly-by-wire
     //
-    AP_Int16 flybywire_airspeed_min;
-    AP_Int16 flybywire_airspeed_max;
     AP_Int8 flybywire_elev_reverse;
     AP_Int8 flybywire_climb_rate;
 
     // Throttle
     //
-    AP_Int8 throttle_min;
-    AP_Int8 throttle_max;
-    AP_Int8 throttle_slewrate;
     AP_Int8 throttle_suppress_manual;
     AP_Int8 throttle_passthru_stabilize;
     AP_Int8 throttle_fs_enabled;
     AP_Int16 throttle_fs_value;
-    AP_Int8 throttle_cruise;
     AP_Int8 throttle_nudge;
 
     // Failsafe
     AP_Int8 short_fs_action;
     AP_Int8 long_fs_action;
+    AP_Float short_fs_timeout;
+    AP_Float long_fs_timeout;
     AP_Int8 gcs_heartbeat_fs_enabled;
+    AP_Float fs_batt_voltage;
+    AP_Float fs_batt_mah;
 
     // Flight modes
     //
@@ -322,9 +331,9 @@ public:
     // Navigational maneuvering limits
     //
     AP_Int16 roll_limit_cd;
-    AP_Int16 pitch_limit_max_cd;
-    AP_Int16 pitch_limit_min_cd;
     AP_Int16 alt_offset;
+    AP_Int16 acro_roll_rate;
+    AP_Int16 acro_pitch_rate;
 
     // Misc
     //
@@ -332,6 +341,7 @@ public:
     AP_Int8 mix_mode;
     AP_Int8 vtail_output;
     AP_Int8 elevon_output;
+    AP_Float mixing_gain;
     AP_Int8 reverse_elevons;
     AP_Int8 reverse_ch1_elevon;
     AP_Int8 reverse_ch2_elevon;
@@ -368,19 +378,22 @@ public:
     AP_Int8 stick_mixing;
     AP_Float takeoff_throttle_min_speed;
     AP_Float takeoff_throttle_min_accel;
+    AP_Int8 takeoff_throttle_delay;
     AP_Int8 level_roll_limit;
 
     // RC channels
-    RC_Channel channel_roll;
-    RC_Channel channel_pitch;
-    RC_Channel channel_throttle;
-    RC_Channel channel_rudder;
+    RC_Channel rc_1;
+    RC_Channel rc_2;
+    RC_Channel rc_3;
+    RC_Channel rc_4;
     RC_Channel_aux rc_5;
     RC_Channel_aux rc_6;
     RC_Channel_aux rc_7;
     RC_Channel_aux rc_8;
-#if CONFIG_HAL_BOARD == HAL_BOARD_APM2 || CONFIG_HAL_BOARD == HAL_BOARD_PX4
+#if CONFIG_HAL_BOARD == HAL_BOARD_PX4
     RC_Channel_aux rc_9;
+#endif
+#if CONFIG_HAL_BOARD == HAL_BOARD_APM2 || CONFIG_HAL_BOARD == HAL_BOARD_PX4
     RC_Channel_aux rc_10;
     RC_Channel_aux rc_11;
 #endif
@@ -388,16 +401,13 @@ public:
     RC_Channel_aux rc_12;
 #endif
 
-    // PID controllers
+    // Attitude to servo controllers
     //
-    PID         pidServoRoll;
-    PID         pidServoPitch;
-    PID         pidServoRudder;
-
     AP_RollController  rollController;
     AP_PitchController pitchController;
     AP_YawController   yawController;
 
+    // PID controllers
     PID         pidNavPitchAirspeed;
     PID         pidTeThrottle;
     PID         pidNavPitchAltitude;
@@ -406,16 +416,18 @@ public:
     Parameters() :
         // variable				default
         //----------------------------------------
-        channel_roll                    (CH_1),
-        channel_pitch                   (CH_2),
-        channel_throttle                (CH_3),
-        channel_rudder                  (CH_4),
+        rc_1                                    (CH_1),
+        rc_2                                    (CH_2),
+        rc_3                                    (CH_3),
+        rc_4                                    (CH_4),
         rc_5                                    (CH_5),
         rc_6                                    (CH_6),
         rc_7                                    (CH_7),
         rc_8                                    (CH_8),
-#if CONFIG_HAL_BOARD == HAL_BOARD_APM2 || CONFIG_HAL_BOARD == HAL_BOARD_PX4
+#if CONFIG_HAL_BOARD == HAL_BOARD_PX4
         rc_9                                    (CH_9),
+#endif
+#if CONFIG_HAL_BOARD == HAL_BOARD_APM2 || CONFIG_HAL_BOARD == HAL_BOARD_PX4
         rc_10                                   (CH_10),
         rc_11                                   (CH_11),
 #endif
@@ -424,11 +436,6 @@ public:
 #endif
         // PID controller    initial P        initial I        initial D        initial imax
         //-----------------------------------------------------------------------------------
-
-        pidServoRoll        (SERVO_ROLL_P,    SERVO_ROLL_I,    SERVO_ROLL_D,    SERVO_ROLL_INT_MAX_CENTIDEGREE),
-        pidServoPitch       (SERVO_PITCH_P,   SERVO_PITCH_I,   SERVO_PITCH_D,   SERVO_PITCH_INT_MAX_CENTIDEGREE),
-        pidServoRudder      (SERVO_YAW_P,     SERVO_YAW_I,     SERVO_YAW_D,     SERVO_YAW_INT_MAX),
-
         pidNavPitchAirspeed (NAV_PITCH_ASP_P, NAV_PITCH_ASP_I, NAV_PITCH_ASP_D, NAV_PITCH_ASP_INT_MAX_CMSEC),
         pidTeThrottle       (THROTTLE_TE_P,   THROTTLE_TE_I,   THROTTLE_TE_D,   THROTTLE_TE_INT_MAX),
         pidNavPitchAltitude (NAV_PITCH_ALT_P, NAV_PITCH_ALT_I, NAV_PITCH_ALT_D, NAV_PITCH_ALT_INT_MAX_CM),

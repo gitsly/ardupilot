@@ -64,6 +64,9 @@ public:
         // scheduler object (for debugging)
         k_param_scheduler,
 
+        // relay object
+        k_param_relay,
+
         // Misc
         //
         k_param_log_bitmask = 20,
@@ -77,12 +80,14 @@ public:
 
         k_param_crosstrack_min_distance,	// deprecated - remove with next eeprom number change
         k_param_rssi_pin,
-        k_param_throttle_accel_enabled,
+        k_param_throttle_accel_enabled,     // deprecated - remove
         k_param_wp_yaw_behavior,
         k_param_acro_trainer_enabled,
         k_param_pilot_velocity_z_max,
         k_param_circle_rate,
-        k_param_sonar_gain,             // 30
+        k_param_sonar_gain,
+        k_param_ch8_option,
+        k_param_arming_check_enabled,   // 32
 
         // 65: AP_Limits Library
         k_param_limits = 65,            // deprecated - remove
@@ -138,7 +143,7 @@ public:
         k_param_optflow_enabled,
         k_param_low_voltage,
         k_param_ch7_option,
-        k_param_auto_slew_rate,
+        k_param_auto_slew_rate,     // deprecated - can be deleted
         k_param_sonar_type,
         k_param_super_simple = 155,
         k_param_axis_enabled = 157,
@@ -198,6 +203,7 @@ public:
         k_param_rc_9,
         k_param_rc_12,
         k_param_failsafe_gcs,           // 198
+        k_param_rcmap,
 
         //
         // 200: flight modes
@@ -242,7 +248,7 @@ public:
         k_param_pid_nav_lat,        // 233 - remove
         k_param_pid_nav_lon,        // 234 - remove
         k_param_pi_alt_hold,
-        k_param_pid_throttle,
+        k_param_pid_throttle_rate,
         k_param_pid_optflow_roll,
         k_param_pid_optflow_pitch,
         k_param_acro_balance_roll,      // scalar (not PID)
@@ -289,7 +295,6 @@ public:
     AP_Int8         battery_volt_pin;
     AP_Int8         battery_curr_pin;
     AP_Int8         rssi_pin;
-    AP_Int8         throttle_accel_enabled;      // enable/disable accel based throttle controller
     AP_Int8         wp_yaw_behavior;            // controls how the autopilot controls yaw during missions
 
     // Waypoints
@@ -337,14 +342,15 @@ public:
     AP_Int16        radio_tuning_low;
     AP_Int8         frame_orientation;
     AP_Int8         ch7_option;
-    AP_Int16        auto_slew_rate;
+    AP_Int8         ch8_option;
+    AP_Int8         arming_check_enabled;
 
 #if FRAME_CONFIG ==     HELI_FRAME
     // Heli
-    RC_Channel        heli_servo_1, heli_servo_2, heli_servo_3, heli_servo_4;   // servos for swash plate and tail
-	AP_Float		heli_pitch_ff;												// pitch rate feed-forward
-	AP_Float		heli_roll_ff;												// roll rate feed-forward
-	AP_Float		heli_yaw_ff;												// yaw rate feed-forward																			
+    RC_Channel      heli_servo_1, heli_servo_2, heli_servo_3, heli_servo_4;     // servos for swash plate and tail
+    AP_Float        heli_pitch_ff;												// pitch rate feed-forward
+    AP_Float        heli_roll_ff;												// roll rate feed-forward
+    AP_Float        heli_yaw_ff;												// yaw rate feed-forward																			
 #endif
 
     // RC channels
@@ -382,7 +388,7 @@ public:
     AC_PID                  pid_loiter_rate_lat;
     AC_PID                  pid_loiter_rate_lon;
 
-    AC_PID                  pid_throttle;
+    AC_PID                  pid_throttle_rate;
     AC_PID                  pid_throttle_accel;
     AC_PID                  pid_optflow_roll;
     AC_PID                  pid_optflow_pitch;
@@ -433,7 +439,7 @@ public:
         pid_loiter_rate_lat     (LOITER_RATE_P,         LOITER_RATE_I,          LOITER_RATE_D,          LOITER_RATE_IMAX * 100),
         pid_loiter_rate_lon     (LOITER_RATE_P,         LOITER_RATE_I,          LOITER_RATE_D,          LOITER_RATE_IMAX * 100),
 
-        pid_throttle            (THROTTLE_P,            THROTTLE_I,             THROTTLE_D,             THROTTLE_IMAX),
+        pid_throttle_rate       (THROTTLE_RATE_P,       THROTTLE_RATE_I,        THROTTLE_RATE_D,        THROTTLE_RATE_IMAX),
         pid_throttle_accel      (THROTTLE_ACCEL_P,      THROTTLE_ACCEL_I,       THROTTLE_ACCEL_D,       THROTTLE_ACCEL_IMAX),
         pid_optflow_roll        (OPTFLOW_ROLL_P,        OPTFLOW_ROLL_I,         OPTFLOW_ROLL_D,         OPTFLOW_IMAX * 100),
         pid_optflow_pitch       (OPTFLOW_PITCH_P,       OPTFLOW_PITCH_I,        OPTFLOW_PITCH_D,        OPTFLOW_IMAX * 100),

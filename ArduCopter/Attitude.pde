@@ -59,11 +59,11 @@ get_stabilize_yaw(int32_t target_angle)
 
 #if LOGGING_ENABLED == ENABLED
     // log output if PID logging is on and we are tuning the yaw
-    if( g.log_bitmask & MASK_LOG_PID && g.radio_tuning == CH6_YAW_KP ) {
+    if( g.log_bitmask & MASK_LOG_PID && g.radio_tuning == CH6_STABILIZE_YAW_KP ) {
         pid_log_counter++;
         if( pid_log_counter >= 10 ) {               // (update rate / desired output rate) = (100hz / 10hz) = 10
             pid_log_counter = 0;
-            Log_Write_PID(CH6_YAW_KP, angle_error, target_rate, i_term, 0, output, tuning_value);
+            Log_Write_PID(CH6_STABILIZE_YAW_KP, angle_error, target_rate, i_term, 0, output, tuning_value);
         }
     }
 #endif
@@ -99,6 +99,143 @@ get_acro_yaw(int32_t target_rate)
     set_yaw_rate_target(target_rate, BODY_FRAME);
 }
 
+// Roll with rate input and stabilized in the body frame
+static void
+get_roll_rate_stabilized_bf(int32_t stick_angle)
+{
+    static float angle_error = 0;
+
+    // Scale pitch leveling by stick input
+    if (!g.acro_trainer_enabled) {
+        roll_axis = (float)roll_axis*constrain_float((1-fabsf(stick_angle/4500.0)),0,1)*cos_pitch_x;
+    }
+
+
+    // convert the input to the desired body frame roll rate
+
+    roll_axis += stick_angle * g.acro_p;
+
+    // add automatic correction
+    int32_t correction_rate = g.pi_stabilize_roll.get_p(angle_error);
+
+    // Calculate integrated body frame rate error
+    angle_error += (roll_axis - (omega.x * DEGX100)) * G_Dt;
+
+    // don't let angle error grow too large
+    angle_error = constrain_float(angle_error, - MAX_ROLL_OVERSHOOT, MAX_ROLL_OVERSHOOT);
+
+    if (!motors.armed() || g.rc_3.servo_out == 0) {
+        angle_error = 0;
+    }
+
+    // set body frame targets for rate controller
+    set_roll_rate_target(roll_axis + correction_rate, BODY_FRAME);
+
+    // Calculate trainer mode earth frame rate command
+    int32_t roll_angle = wrap_180_cd(ahrs.roll_sensor);
+
+    int32_t target_rate = 0;
+
+    if (g.acro_trainer_enabled) {
+        if (roll_angle > 4500){
+            target_rate =  g.pi_stabilize_roll.get_p(4500-roll_angle);
+        }else if (roll_angle < -4500) {
+            target_rate =  g.pi_stabilize_roll.get_p(-4500-roll_angle);
+        }
+    }
+    roll_angle   = constrain_int32(roll_angle, -3000, 3000);
+    target_rate -=  (roll_angle * g.acro_balance_roll)/100;
+
+    // add earth frame targets for rate controller
+    set_roll_rate_target(target_rate, BODY_EARTH_FRAME);
+}
+
+// Pitch with rate input and stabilized in the body frame
+static void
+get_pitch_rate_stabilized_bf(int32_t stick_angle)
+{
+    static float angle_error = 0;
+
+    // scale pitch leveling by stick input
+
+    if (!g.acro_trainer_enabled) {
+        pitch_axis = (float)pitch_axis*constrain_float((1-fabsf(stick_angle/4500.0)),0,1)*cos_pitch_x;
+    }
+
+    // convert the input to the desired body frame pitch rate
+    pitch_axis += stick_angle * g.acro_p;
+
+    // add automatic correction
+    int32_t correction_rate = g.pi_stabilize_pitch.get_p(angle_error);
+
+    // Calculate integrated body frame rate error
+    angle_error += (pitch_axis - (omega.y * DEGX100)) * G_Dt;
+
+    // don't let angle error grow too large
+    angle_error = constrain_float(angle_error, - MAX_PITCH_OVERSHOOT, MAX_PITCH_OVERSHOOT);
+
+    if (!motors.armed() || g.rc_3.servo_out == 0) {
+        angle_error = 0;
+    }
+
+    // set body frame targets for rate controller
+    set_pitch_rate_target(pitch_axis + correction_rate, BODY_FRAME);
+
+    // Calculate trainer mode earth frame rate command
+    int32_t pitch_angle = wrap_180_cd(ahrs.pitch_sensor);
+
+    int32_t target_rate = 0;
+
+    if (g.acro_trainer_enabled) {
+        if (pitch_angle > 4500){
+            target_rate =  g.pi_stabilize_pitch.get_p(4500-pitch_angle);
+        }else if (pitch_angle < -4500) {
+            target_rate =  g.pi_stabilize_pitch.get_p(-4500-pitch_angle);
+        }
+    }
+    pitch_angle   = constrain_int32(pitch_angle, -3000, 3000);
+    target_rate -=  (pitch_angle * g.acro_balance_pitch)/100;
+
+    // add earth frame targets for rate controller
+    set_pitch_rate_target(target_rate, BODY_EARTH_FRAME);
+}
+
+// Yaw with rate input and stabilized in the body frame
+static void
+get_yaw_rate_stabilized_bf(int32_t stick_angle)
+{
+    static float angle_error = 0;
+
+    // scale yaw leveling by stick input
+
+    if (!g.acro_trainer_enabled) {
+        nav_yaw = (float)nav_yaw*constrain_float((1-fabsf(stick_angle/4500.0)),0,1)*cos_pitch_x;
+    }
+
+    // convert the input to the desired body frame yaw rate
+    nav_yaw += stick_angle * g.acro_p;
+
+    // add automatic correction
+    int32_t correction_rate = g.pi_stabilize_yaw.get_p(angle_error);
+
+    // Calculate integrated body frame rate error
+    angle_error += (nav_yaw - (omega.z * DEGX100)) * G_Dt;
+
+    // don't let angle error grow too large
+    angle_error = constrain_float(angle_error, - MAX_YAW_OVERSHOOT, MAX_YAW_OVERSHOOT);
+
+    if (!motors.armed() || g.rc_3.servo_out == 0) {
+        angle_error = 0;
+    }
+
+    // set body frame targets for rate controller
+    set_yaw_rate_target(nav_yaw + correction_rate, BODY_FRAME);
+
+    // add earth frame targets for rate controller
+    set_yaw_rate_target(0, BODY_EARTH_FRAME);
+}
+
+
 // Roll with rate input and stabilized in the earth frame
 static void
 get_roll_rate_stabilized_ef(int32_t stick_angle)
@@ -122,14 +259,13 @@ get_roll_rate_stabilized_ef(int32_t stick_angle)
         angle_error	= constrain_int32(angle_error, -MAX_ROLL_OVERSHOOT, MAX_ROLL_OVERSHOOT);
     }
 
-    if (motors.armed() == false || ((g.rc_3.control_in == 0) && !ap.failsafe_radio)) {
+    // reset target angle to current angle if motors not spinning
+    if (!motors.armed() || g.rc_3.servo_out == 0) {
         angle_error = 0;
     }
 
     // update roll_axis to be within max_angle_overshoot of our current heading
     roll_axis = wrap_180_cd(angle_error + ahrs.roll_sensor);
-
-    // set earth frame targets for rate controller
 
     // set earth frame targets for rate controller
 	set_roll_rate_target(g.pi_stabilize_roll.get_p(angle_error) + target_rate, EARTH_FRAME);
@@ -158,7 +294,8 @@ get_pitch_rate_stabilized_ef(int32_t stick_angle)
         angle_error	= constrain_int32(angle_error, -MAX_PITCH_OVERSHOOT, MAX_PITCH_OVERSHOOT);
     }
 
-    if (motors.armed() == false || ((g.rc_3.control_in == 0) && !ap.failsafe_radio)) {
+    // reset target angle to current angle if motors not spinning
+    if (!motors.armed() || g.rc_3.servo_out == 0) {
         angle_error = 0;
     }
 
@@ -189,7 +326,8 @@ get_yaw_rate_stabilized_ef(int32_t stick_angle)
     // limit the maximum overshoot
     angle_error	= constrain_int32(angle_error, -MAX_YAW_OVERSHOOT, MAX_YAW_OVERSHOOT);
 
-    if (motors.armed() == false || ((g.rc_3.control_in == 0) && !ap.failsafe_radio)) {
+    // reset target angle to current heading if motors not spinning
+    if (!motors.armed() || g.rc_3.servo_out == 0) {
     	angle_error = 0;
     }
 
@@ -236,9 +374,14 @@ update_rate_contoller_targets()
 {
     if( rate_targets_frame == EARTH_FRAME ) {
         // convert earth frame rates to body frame rates
-        roll_rate_target_bf 	= roll_rate_target_ef - sin_pitch * yaw_rate_target_ef;
-        pitch_rate_target_bf 	= cos_roll_x  * pitch_rate_target_ef + sin_roll * cos_pitch_x * yaw_rate_target_ef;
-        yaw_rate_target_bf 		= cos_pitch_x * cos_roll_x * yaw_rate_target_ef - sin_roll * pitch_rate_target_ef;
+        roll_rate_target_bf     = roll_rate_target_ef - sin_pitch * yaw_rate_target_ef;
+        pitch_rate_target_bf    = cos_roll_x  * pitch_rate_target_ef + sin_roll * cos_pitch_x * yaw_rate_target_ef;
+        yaw_rate_target_bf      = cos_pitch_x * cos_roll_x * yaw_rate_target_ef - sin_roll * pitch_rate_target_ef;
+    }else if( rate_targets_frame == BODY_EARTH_FRAME ) {
+        // add converted earth frame rates to body frame rates
+        roll_axis   = roll_rate_target_ef - sin_pitch * yaw_rate_target_ef;
+        pitch_axis  = cos_roll_x  * pitch_rate_target_ef + sin_roll * cos_pitch_x * yaw_rate_target_ef;
+        nav_yaw     = cos_pitch_x * cos_roll_x * yaw_rate_target_ef - sin_roll * pitch_rate_target_ef;
     }
 }
 
@@ -261,7 +404,7 @@ run_rate_controllers()
 #endif
 
     // run throttle controller if accel based throttle controller is enabled and active (active means it has been given a target)
-    if( g.throttle_accel_enabled && throttle_accel_controller_active ) {
+    if( throttle_accel_controller_active ) {
         set_throttle_out(get_throttle_accel(throttle_accel_target_ef), true);
     }
 }
@@ -317,11 +460,11 @@ get_heli_rate_roll(int32_t target_rate)
 
 #if LOGGING_ENABLED == ENABLED
     // log output if PID logging is on and we are tuning the rate P, I or D gains
-    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_KP || g.radio_tuning == CH6_RATE_KI || g.radio_tuning == CH6_RATE_KD) ) {
+    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_ROLL_PITCH_KP || g.radio_tuning == CH6_RATE_ROLL_PITCH_KI || g.radio_tuning == CH6_RATE_ROLL_PITCH_KD) ) {
         pid_log_counter++;
         if( pid_log_counter >= 10 ) {               // (update rate / desired output rate) = (100hz / 10hz) = 10
             pid_log_counter = 0;
-            Log_Write_PID(CH6_RATE_KP, rate_error, p, i, d, output, tuning_value);
+            Log_Write_PID(CH6_RATE_ROLL_PITCH_KP, rate_error, p, i, d, output, tuning_value);
         }
     }
 #endif
@@ -369,9 +512,9 @@ get_heli_rate_pitch(int32_t target_rate)
 
 #if LOGGING_ENABLED == ENABLED
     // log output if PID logging is on and we are tuning the rate P, I or D gains
-    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_KP || g.radio_tuning == CH6_RATE_KI || g.radio_tuning == CH6_RATE_KD) ) {
+    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_ROLL_PITCH_KP || g.radio_tuning == CH6_RATE_ROLL_PITCH_KI || g.radio_tuning == CH6_RATE_ROLL_PITCH_KD) ) {
         if( pid_log_counter == 0 ) {               // relies on get_heli_rate_roll to update pid_log_counter
-            Log_Write_PID(CH6_RATE_KP+100, rate_error, p, i, 0, output, tuning_value);
+            Log_Write_PID(CH6_RATE_ROLL_PITCH_KP+100, rate_error, p, i, 0, output, tuning_value);
         }
     }
 #endif
@@ -442,11 +585,12 @@ get_rate_roll(int32_t target_rate)
     rate_error  = target_rate - current_rate;
     p           = g.pid_rate_roll.get_p(rate_error);
 
-    // freeze I term if we've breached roll-pitch limits
-    if( motors.reached_limit(AP_MOTOR_ROLLPITCH_LIMIT) ) {
-        i	= g.pid_rate_roll.get_integrator();
-    }else{
-        i   = g.pid_rate_roll.get_i(rate_error, G_Dt);
+    // get i term
+    i = g.pid_rate_roll.get_integrator();
+
+    // update i term as long as we haven't breached the limits or the I term will certainly reduce
+    if (!motors.reached_limit(AP_MOTOR_ROLLPITCH_LIMIT) || ((i>0&&rate_error<0)||(i<0&&rate_error>0))) {
+        i = g.pid_rate_roll.get_i(rate_error, G_Dt);
     }
 
     d = g.pid_rate_roll.get_d(rate_error, G_Dt);
@@ -457,11 +601,11 @@ get_rate_roll(int32_t target_rate)
 
 #if LOGGING_ENABLED == ENABLED
     // log output if PID logging is on and we are tuning the rate P, I or D gains
-    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_KP || g.radio_tuning == CH6_RATE_KI || g.radio_tuning == CH6_RATE_KD) ) {
+    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_ROLL_PITCH_KP || g.radio_tuning == CH6_RATE_ROLL_PITCH_KI || g.radio_tuning == CH6_RATE_ROLL_PITCH_KD) ) {
         pid_log_counter++;                          // Note: get_rate_pitch pid logging relies on this function to update pid_log_counter so if you change the line above you must change the equivalent line in get_rate_pitch
         if( pid_log_counter >= 10 ) {               // (update rate / desired output rate) = (100hz / 10hz) = 10
             pid_log_counter = 0;
-            Log_Write_PID(CH6_RATE_KP, rate_error, p, i, d, output, tuning_value);
+            Log_Write_PID(CH6_RATE_ROLL_PITCH_KP, rate_error, p, i, d, output, tuning_value);
         }
     }
 #endif
@@ -484,12 +628,15 @@ get_rate_pitch(int32_t target_rate)
     // call pid controller
     rate_error      = target_rate - current_rate;
     p               = g.pid_rate_pitch.get_p(rate_error);
-    // freeze I term if we've breached roll-pitch limits
-    if( motors.reached_limit(AP_MOTOR_ROLLPITCH_LIMIT) ) {
-        i = g.pid_rate_pitch.get_integrator();
-    }else{
+
+    // get i term
+    i = g.pid_rate_pitch.get_integrator();
+
+    // update i term as long as we haven't breached the limits or the I term will certainly reduce
+    if (!motors.reached_limit(AP_MOTOR_ROLLPITCH_LIMIT) || ((i>0&&rate_error<0)||(i<0&&rate_error>0))) {
         i = g.pid_rate_pitch.get_i(rate_error, G_Dt);
     }
+
     d = g.pid_rate_pitch.get_d(rate_error, G_Dt);
     output = p + i + d;
 
@@ -498,9 +645,9 @@ get_rate_pitch(int32_t target_rate)
 
 #if LOGGING_ENABLED == ENABLED
     // log output if PID logging is on and we are tuning the rate P, I or D gains
-    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_KP || g.radio_tuning == CH6_RATE_KI || g.radio_tuning == CH6_RATE_KD) ) {
+    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_RATE_ROLL_PITCH_KP || g.radio_tuning == CH6_RATE_ROLL_PITCH_KI || g.radio_tuning == CH6_RATE_ROLL_PITCH_KD) ) {
         if( pid_log_counter == 0 ) {               // relies on get_rate_roll having updated pid_log_counter
-            Log_Write_PID(CH6_RATE_KP+100, rate_error, p, i, d, output, tuning_value);
+            Log_Write_PID(CH6_RATE_ROLL_PITCH_KP+100, rate_error, p, i, d, output, tuning_value);
         }
     }
 #endif
@@ -521,12 +668,16 @@ get_rate_yaw(int32_t target_rate)
 
     // separately calculate p, i, d values for logging
     p = g.pid_rate_yaw.get_p(rate_error);
-    // freeze I term if we've breached yaw limits
-    if( motors.reached_limit(AP_MOTOR_YAW_LIMIT) ) {
-        i = g.pid_rate_yaw.get_integrator();
-    }else{
+
+    // get i term
+    i = g.pid_rate_yaw.get_integrator();
+
+    // update i term as long as we haven't breached the limits or the I term will certainly reduce
+    if (!motors.reached_limit(AP_MOTOR_YAW_LIMIT) || ((i>0&&rate_error<0)||(i<0&&rate_error>0))) {
         i = g.pid_rate_yaw.get_i(rate_error, G_Dt);
     }
+
+    // get d value
     d = g.pid_rate_yaw.get_d(rate_error, G_Dt);
 
     output  = p+i+d;
@@ -543,16 +694,8 @@ get_rate_yaw(int32_t target_rate)
     }
 #endif
 
-#if FRAME_CONFIG == TRI_FRAME
     // constrain output
     return output;
-#else // !TRI_FRAME
-    // output control:
-    int16_t yaw_limit = 2200 + abs(g.rc_4.control_in);
-
-    // smoother Yaw control:
-    return constrain_int32(output, -yaw_limit, yaw_limit);
-#endif // TRI_FRAME
 }
 #endif // !HELI_FRAME
 
@@ -710,8 +853,8 @@ static void get_look_at_yaw()
 static void get_look_ahead_yaw(int16_t pilot_yaw)
 {
     // Commanded Yaw to automatically look ahead.
-    if (g_gps->fix && g_gps->ground_course > YAW_LOOK_AHEAD_MIN_SPEED) {
-        nav_yaw = get_yaw_slew(nav_yaw, g_gps->ground_course, AUTO_YAW_SLEW_RATE);
+    if (g_gps->fix && g_gps->ground_course_cd > YAW_LOOK_AHEAD_MIN_SPEED) {
+        nav_yaw = get_yaw_slew(nav_yaw, g_gps->ground_course_cd, AUTO_YAW_SLEW_RATE);
         get_stabilize_yaw(wrap_360_cd(nav_yaw + pilot_yaw));   // Allow pilot to "skid" around corners up to 45 degrees
     }else{
         nav_yaw += pilot_yaw * g.acro_p * G_Dt;
@@ -795,13 +938,8 @@ void set_throttle_out( int16_t throttle_out, bool apply_angle_boost )
 // set_throttle_accel_target - to be called by upper throttle controllers to set desired vertical acceleration in earth frame
 void set_throttle_accel_target( int16_t desired_acceleration )
 {
-    if( g.throttle_accel_enabled ) {
-        throttle_accel_target_ef = desired_acceleration;
-        throttle_accel_controller_active = true;
-    }else{
-        // To-Do log dataflash or tlog error
-        cliSerial->print_P(PSTR("Err: target sent to inactive acc thr controller!\n"));
-    }
+    throttle_accel_target_ef = desired_acceleration;
+    throttle_accel_controller_active = true;
 }
 
 // disable_throttle_accel - disables the accel based throttle controller
@@ -853,11 +991,11 @@ get_throttle_accel(int16_t z_target_accel)
 
 #if LOGGING_ENABLED == ENABLED
     // log output if PID loggins is on and we are tuning the yaw
-    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_THR_ACCEL_KP || g.radio_tuning == CH6_THR_ACCEL_KI || g.radio_tuning == CH6_THR_ACCEL_KD) ) {
+    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_THROTTLE_ACCEL_KP || g.radio_tuning == CH6_THROTTLE_ACCEL_KI || g.radio_tuning == CH6_THROTTLE_ACCEL_KD) ) {
         pid_log_counter++;
         if( pid_log_counter >= 10 ) {               // (update rate / desired output rate) = (50hz / 10hz) = 5hz
             pid_log_counter = 0;
-            Log_Write_PID(CH6_THR_ACCEL_KP, z_accel_error, p, i, d, output, tuning_value);
+            Log_Write_PID(CH6_THROTTLE_ACCEL_KP, z_accel_error, p, i, d, output, tuning_value);
         }
     }
 #endif
@@ -963,7 +1101,8 @@ get_throttle_rate(float z_target_speed)
 {
     static uint32_t last_call_ms = 0;
     static float z_rate_error = 0;   // The velocity error in cm.
-    static float z_target_speed_last = 0;   // The requested speed from the previous iteration
+    static float z_target_speed_filt = 0;   // The filtered requested speed
+    float z_target_speed_delta;   // The change in requested speed
     int32_t p,i,d;      // used to capture pid values for logging
     int32_t output;     // the target acceleration if the accel based throttle is enabled, otherwise the output to be sent to the motors
     uint32_t now = millis();
@@ -971,29 +1110,29 @@ get_throttle_rate(float z_target_speed)
     // reset target altitude if this controller has just been engaged
     if( now - last_call_ms > 100 ) {
         // Reset Filter
-        z_rate_error    = 0;
+        z_rate_error = 0;
+        z_target_speed_filt = z_target_speed;
         output = 0;
     } else {
         // calculate rate error and filter with cut off frequency of 2 Hz
         z_rate_error    = z_rate_error + 0.20085f * ((z_target_speed - climb_rate) - z_rate_error);
-        // feed forward acceleration based on change in desired speed.
-        output = (z_target_speed - z_target_speed_last) * 50.0f;   // To-Do: replace 50 with dt
+        // feed forward acceleration based on change in the filtered desired speed.
+        z_target_speed_delta = 0.20085f * (z_target_speed - z_target_speed_filt);
+        z_target_speed_filt    = z_target_speed_filt + z_target_speed_delta;
+        output = z_target_speed_delta * 50.0f;   // To-Do: replace 50 with dt
     }
     last_call_ms = now;
 
-    // store target speed for next iteration
-    z_target_speed_last = z_target_speed;
-
     // separately calculate p, i, d values for logging
-    p = g.pid_throttle.get_p(z_rate_error);
+    p = g.pid_throttle_rate.get_p(z_rate_error);
 
     // freeze I term if we've breached throttle limits
     if(motors.reached_limit(AP_MOTOR_THROTTLE_LIMIT)) {
-        i = g.pid_throttle.get_integrator();
+        i = g.pid_throttle_rate.get_integrator();
     }else{
-        i = g.pid_throttle.get_i(z_rate_error, .02);
+        i = g.pid_throttle_rate.get_i(z_rate_error, .02);
     }
-    d = g.pid_throttle.get_d(z_rate_error, .02);
+    d = g.pid_throttle_rate.get_d(z_rate_error, .02);
 
     // consolidate and constrain target acceleration
     output += p+i+d;
@@ -1001,26 +1140,17 @@ get_throttle_rate(float z_target_speed)
 
 #if LOGGING_ENABLED == ENABLED
     // log output if PID loggins is on and we are tuning the yaw
-    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_THROTTLE_KP || g.radio_tuning == CH6_THROTTLE_KI || g.radio_tuning == CH6_THROTTLE_KD) ) {
+    if( g.log_bitmask & MASK_LOG_PID && (g.radio_tuning == CH6_THROTTLE_RATE_KP || g.radio_tuning == CH6_THROTTLE_RATE_KD) ) {
         pid_log_counter++;
         if( pid_log_counter >= 10 ) {               // (update rate / desired output rate) = (50hz / 10hz) = 5hz
             pid_log_counter = 0;
-            Log_Write_PID(CH6_THROTTLE_KP, z_rate_error, p, i, d, output, tuning_value);
+            Log_Write_PID(CH6_THROTTLE_RATE_KP, z_rate_error, p, i, d, output, tuning_value);
         }
     }
 #endif
 
-    // send output to accelerometer based throttle controller if enabled otherwise send directly to motors
-    if( g.throttle_accel_enabled ) {
-        // set target for accel based throttle controller
-        set_throttle_accel_target(output);
-    }else{
-        set_throttle_out(g.throttle_cruise+output, true);
-    }
-
-    // limit loiter & waypoint navigation from causing too much lean
-    // To-Do: ensure that this limit is cleared when this throttle controller is not running so that loiter is not left constrained for Position mode
-    wp_nav.set_angle_limit(4500 - constrain_float((z_rate_error - 100) * 10, 0, 3500));
+    // set target for accel based throttle controller
+    set_throttle_accel_target(output);
 
     // update throttle cruise
     // TO-DO: this may not be correct because g.rc_3.servo_out has not been updated for this iteration
@@ -1196,7 +1326,7 @@ static void reset_throttle_I(void)
 {
     // For Altitude Hold
     g.pi_alt_hold.reset_I();
-    g.pid_throttle.reset_I();
+    g.pid_throttle_rate.reset_I();
     g.pid_throttle_accel.reset_I();
 }
 
