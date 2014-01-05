@@ -123,7 +123,6 @@
 #include <AC_WPNav.h>     		// ArduCopter waypoint navigation library
 #include <AP_Declination.h>     // ArduPilot Mega Declination Helper Library
 #include <AC_Fence.h>           // Arducopter Fence library
-#include <memcheck.h>           // memory limit checker
 #include <SITL.h>               // software in the loop support
 #include <AP_Scheduler.h>       // main loop scheduler
 #include <AP_RCMapper.h>        // RC input mapping library
@@ -131,6 +130,9 @@
 #include <AP_BattMonitor.h>     // Battery monitor library
 #if SPRAYER == ENABLED
 #include <AC_Sprayer.h>         // crop sprayer library
+#endif
+#if EPM_ENABLED == ENABLED
+#include <AP_EPM.h>				// EPM cargo gripper stuff
 #endif
 
 // AP_HAL to Arduino compatibility layer
@@ -190,8 +192,8 @@ static DataFlash_APM2 DataFlash;
 #elif CONFIG_HAL_BOARD == HAL_BOARD_APM1
 static DataFlash_APM1 DataFlash;
 #elif CONFIG_HAL_BOARD == HAL_BOARD_AVR_SITL
-//static DataFlash_File DataFlash("/tmp/APMlogs");
-static DataFlash_SITL DataFlash;
+static DataFlash_File DataFlash("logs");
+//static DataFlash_SITL DataFlash;
 #elif CONFIG_HAL_BOARD == HAL_BOARD_PX4
 static DataFlash_File DataFlash("/fs/microsd/APM/logs");
 #elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX
@@ -830,6 +832,13 @@ static AC_Sprayer sprayer(&inertial_nav);
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
+// EPM Cargo Griper
+////////////////////////////////////////////////////////////////////////////////
+#if EPM_ENABLED == ENABLED
+static AP_EPM epm;
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
 // function definitions to keep compiler from complaining about undeclared functions
 ////////////////////////////////////////////////////////////////////////////////
 void get_throttle_althold(int32_t target_alt, int16_t min_climb_rate, int16_t max_climb_rate);
@@ -871,9 +880,6 @@ static const AP_Scheduler::Task scheduler_tasks[] PROGMEM = {
     { gcs_send_heartbeat,  100,     150 },
     { gcs_send_deferred,     2,     720 },
     { gcs_data_stream_send,  2,     950 },
-#if COPTER_LEDS == ENABLED
-    { update_copter_leds,   10,      55 },
-#endif
     { update_mount,          2,     450 },
     { ten_hz_logging_loop,  10,     300 },
     { fifty_hz_logging_loop, 2,     220 },
@@ -897,37 +903,12 @@ static const AP_Scheduler::Task scheduler_tasks[] PROGMEM = {
 };
 
 
-void setup() {
-    // this needs to be the first call, as it fills memory with
-    // sentinel values
-    memcheck_init();
+void setup() 
+{
     cliSerial = hal.console;
 
     // Load the default values of variables listed in var_info[]s
     AP_Param::setup_sketch_defaults();
-
-    // initialise notify system
-    notify.init(true);
-
-    // initialise battery monitor
-    battery.init();
-
-#if CONFIG_SONAR == ENABLED
- #if CONFIG_SONAR_SOURCE == SONAR_SOURCE_ADC
-    sonar_analog_source = new AP_ADC_AnalogSource(
-            &adc, CONFIG_SONAR_SOURCE_ADC_CHANNEL, 0.25);
- #elif CONFIG_SONAR_SOURCE == SONAR_SOURCE_ANALOG_PIN
-    sonar_analog_source = hal.analogin->channel(
-            CONFIG_SONAR_SOURCE_ANALOG_PIN);
- #else
-  #warning "Invalid CONFIG_SONAR_SOURCE"
- #endif
-    sonar = new AP_RangeFinder_MaxsonarXL(sonar_analog_source,
-            &sonar_mode_filter);
-#endif
-
-    rssi_analog_source      = hal.analogin->channel(g.rssi_pin);
-    board_vcc_analog_source = hal.analogin->channel(ANALOG_INPUT_BOARD_VCC);
 
     init_ardupilot();
 
@@ -1006,6 +987,7 @@ void loop()
 // Main loop - 100hz
 static void fast_loop()
 {
+
     // IMU DCM Algorithm
     // --------------------
     read_AHRS();
@@ -1158,9 +1140,8 @@ static void fifty_hz_logging_loop()
         Log_Write_Attitude();
     }
 
-    if (g.log_bitmask & MASK_LOG_IMU && motors.armed()) {
+    if (g.log_bitmask & MASK_LOG_IMU && motors.armed())
         DataFlash.Log_Write_IMU(ins);
-    }
 #endif
 }
 
@@ -1410,6 +1391,13 @@ bool set_yaw_mode(uint8_t new_yaw_mode)
 // 100hz update rate
 void update_yaw_mode(void)
 {
+    int16_t pilot_yaw = g.rc_4.control_in;
+
+    // do not process pilot's yaw input during radio failsafe
+    if (failsafe.radio) {
+        pilot_yaw = 0;
+    }
+
     switch(yaw_mode) {
 
     case YAW_HOLD:
@@ -1418,12 +1406,12 @@ void update_yaw_mode(void)
             control_yaw = ahrs.yaw_sensor;
         }
         // heading hold at heading held in control_yaw but allow input from pilot
-        get_yaw_rate_stabilized_ef(g.rc_4.control_in);
+        get_yaw_rate_stabilized_ef(pilot_yaw);
         break;
 
     case YAW_ACRO:
         // pilot controlled yaw using rate controller
-        get_yaw_rate_stabilized_bf(g.rc_4.control_in);
+        get_yaw_rate_stabilized_bf(pilot_yaw);
         break;
 
     case YAW_LOOK_AT_NEXT_WP:
@@ -1438,7 +1426,7 @@ void update_yaw_mode(void)
         get_stabilize_yaw(control_yaw);
 
         // if there is any pilot input, switch to YAW_HOLD mode for the next iteration
-        if( g.rc_4.control_in != 0 ) {
+        if (pilot_yaw != 0) {
             set_yaw_mode(YAW_HOLD);
         }
         break;
@@ -1452,7 +1440,7 @@ void update_yaw_mode(void)
         get_look_at_yaw();
 
         // if there is any pilot input, switch to YAW_HOLD mode for the next iteration
-        if( g.rc_4.control_in != 0 ) {
+        if (pilot_yaw != 0) {
             set_yaw_mode(YAW_HOLD);
         }
         break;
@@ -1466,7 +1454,7 @@ void update_yaw_mode(void)
         get_circle_yaw();
 
         // if there is any pilot input, switch to YAW_HOLD mode for the next iteration
-        if( g.rc_4.control_in != 0 ) {
+        if (pilot_yaw != 0) {
             set_yaw_mode(YAW_HOLD);
         }
         break;
@@ -1482,7 +1470,7 @@ void update_yaw_mode(void)
         get_stabilize_yaw(control_yaw);
 
         // if there is any pilot input, switch to YAW_HOLD mode for the next iteration
-        if( g.rc_4.control_in != 0 ) {
+        if (pilot_yaw != 0) {
             set_yaw_mode(YAW_HOLD);
         }
         break;
@@ -1504,7 +1492,7 @@ void update_yaw_mode(void)
             control_yaw = ahrs.yaw_sensor;
         }
 		// Commanded Yaw to automatically look ahead.
-        get_look_ahead_yaw(g.rc_4.control_in);
+        get_look_ahead_yaw(pilot_yaw);
         break;
 
     case YAW_DRIFT:
@@ -1526,7 +1514,7 @@ void update_yaw_mode(void)
         get_stabilize_yaw(control_yaw);
 
         // if there is any pilot input, switch to YAW_HOLD mode for the next iteration
-        if( g.rc_4.control_in != 0 ) {
+        if (pilot_yaw != 0) {
             set_yaw_mode(YAW_HOLD);
         }
 
@@ -1585,15 +1573,9 @@ bool set_roll_pitch_mode(uint8_t new_roll_pitch_mode)
         case ROLL_PITCH_AUTO:
         case ROLL_PITCH_STABLE_OF:
         case ROLL_PITCH_DRIFT:
+        case ROLL_PITCH_LOITER:
         case ROLL_PITCH_SPORT:
             roll_pitch_initialised = true;
-            break;
-
-        case ROLL_PITCH_LOITER:
-            // require gps lock
-            if( ap.home_is_set ) {
-                roll_pitch_initialised = true;
-            }
             break;
 
 #if AUTOTUNE == ENABLED

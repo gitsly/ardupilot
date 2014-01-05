@@ -32,16 +32,20 @@ PX4_V2_CONFIG_FILE=$(MK_DIR)/PX4/config_px4fmu-v2_APM.mk
 
 SKETCHFLAGS=$(SKETCHLIBINCLUDES) -I$(PWD) -DARDUPILOT_BUILD -DCONFIG_HAL_BOARD=HAL_BOARD_PX4 -DSKETCHNAME="\\\"$(SKETCH)\\\"" -DSKETCH_MAIN=ArduPilot_main
 
-PX4_MAKE = make -C $(SKETCHBOOK) -f $(PX4_ROOT)/Makefile EXTRADEFINES="$(SKETCHFLAGS) "'$(EXTRAFLAGS)' APM_MODULE_DIR=$(SKETCHBOOK) SKETCHBOOK=$(SKETCHBOOK) PX4_ROOT=$(PX4_ROOT) NUTTX_SRC=$(NUTTX_SRC) MAXOPTIMIZATION="-Os"
+WARNFLAGS = -Wno-psabi -Wno-packed
+
+PX4_MAKE = $(v) make -C $(SKETCHBOOK) -f $(PX4_ROOT)/Makefile EXTRADEFINES="$(SKETCHFLAGS) $(WARNFLAGS) "'$(EXTRAFLAGS)' APM_MODULE_DIR=$(SKETCHBOOK) SKETCHBOOK=$(SKETCHBOOK) PX4_ROOT=$(PX4_ROOT) NUTTX_SRC=$(NUTTX_SRC) MAXOPTIMIZATION="-Os"
 PX4_MAKE_ARCHIVES = make -C $(PX4_ROOT) NUTTX_SRC=$(NUTTX_SRC) archives MAXOPTIMIZATION="-Os"
 
 .PHONY: module_mk
 module_mk:
 	$(RULEHDR)
-	$(v) echo "# Auto-generated file - do not edit" > $(SKETCHBOOK)/module.mk
-	$(v) echo "MODULE_COMMAND = ArduPilot" >> $(SKETCHBOOK)/module.mk
-	$(v) echo "SRCS = Build.$(SKETCH)/$(SKETCH).cpp $(SKETCHLIBSRCSRELATIVE)" >> $(SKETCHBOOK)/module.mk
-	$(v) echo "MODULE_STACKSIZE = 4096" >> $(SKETCHBOOK)/module.mk
+	$(v) echo "# Auto-generated file - do not edit" > $(SKETCHBOOK)/module.mk.new
+	$(v) echo "MODULE_COMMAND = ArduPilot" >> $(SKETCHBOOK)/module.mk.new
+	$(v) echo "SRCS = Build.$(SKETCH)/$(SKETCH).cpp $(SKETCHLIBSRCSRELATIVE)" >> $(SKETCHBOOK)/module.mk.new
+	$(v) echo "MODULE_STACKSIZE = 4096" >> $(SKETCHBOOK)/module.mk.new
+	$(v) cmp $(SKETCHBOOK)/module.mk $(SKETCHBOOK)/module.mk.new 2>/dev/null || mv $(SKETCHBOOK)/module.mk.new $(SKETCHBOOK)/module.mk
+	$(v) rm -f $(SKETCHBOOK)/module.mk.new
 
 px4-v1: showflags $(PX4_ROOT)/Archives/px4fmu-v1.export $(SKETCHCPP) module_mk px4-io-v1
 	$(RULEHDR)
@@ -83,6 +87,7 @@ px4-io-v1: $(PX4_ROOT)/Archives/px4io-v1.export
 	$(v) make -C $(PX4_ROOT) px4io-v1_default
 	$(v) /bin/rm -f px4io-v1.bin
 	$(v) cp $(PX4_ROOT)/Images/px4io-v1_default.bin px4io-v1.bin
+	$(v) cp $(PX4_ROOT)/Build/px4io-v1_default.build/firmware.elf px4io-v1.elf
 	$(v) mkdir -p $(MK_DIR)/PX4/ROMFS/px4io/
 	$(v) rm -f $(MK_DIR)/PX4/ROMFS/px4io/px4io.bin
 	$(v) cp px4io-v1.bin $(MK_DIR)/PX4/ROMFS/px4io/px4io.bin
@@ -94,9 +99,10 @@ px4-io-v1: $(PX4_ROOT)/Archives/px4io-v1.export
 
 px4-io-v2: $(PX4_ROOT)/Archives/px4io-v2.export
 	$(v) make -C $(PX4_ROOT) px4io-v2_default
-	$(v) /bin/rm -f px4io-v1.bin
+	$(v) /bin/rm -f px4io-v2.bin
 	$(v) cp $(PX4_ROOT)/Build/px4io-v2_default.build/firmware.bin px4io-v2.bin
 	$(v) cp $(PX4_ROOT)/Images/px4io-v2_default.bin px4io-v2.bin
+	$(v) cp $(PX4_ROOT)/Build/px4io-v2_default.build/firmware.elf px4io-v2.elf
 	$(v) mkdir -p $(MK_DIR)/PX4/ROMFS/px4io/
 	$(v) rm -f $(MK_DIR)/PX4/ROMFS/px4io/px4io.bin
 	$(v) cp px4io-v2.bin $(MK_DIR)/PX4/ROMFS/px4io/px4io.bin

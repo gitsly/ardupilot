@@ -148,9 +148,6 @@
 #ifndef CONFIG_IMU_TYPE
  # define CONFIG_IMU_TYPE CONFIG_IMU_OILPAN
 #endif
-#ifndef MPU6K_FILTER
- # define MPU6K_FILTER MPU6K_DEFAULT_FILTER
-#endif
 
 //////////////////////////////////////////////////////////////////////////////
 // ADC Enable - used to eliminate for systems which don't have ADC.
@@ -414,6 +411,12 @@
 //  Crop Sprayer
 #ifndef SPRAYER
  # define SPRAYER  DISABLED
+#endif
+
+//////////////////////////////////////////////////////////////////////////////
+//	EPM cargo gripper
+#ifndef EPM_ENABLED
+ # define EPM_ENABLED DISABLED
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
@@ -940,7 +943,7 @@
  # define LOGGING_ENABLED                ENABLED
 #endif
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_APM1 || CONFIG_HAL_BOARD == HAL_BOARD_APM2
+#if CONFIG_HAL_BOARD == HAL_BOARD_APM1 || CONFIG_HAL_BOARD == HAL_BOARD_APM2 || CONFIG_HAL_BOARD == HAL_BOARD_AVR_SITL
  // APM1 & APM2 default logging
  # define DEFAULT_LOG_BITMASK \
     MASK_LOG_ATTITUDE_MED | \
