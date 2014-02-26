@@ -234,7 +234,7 @@ void SITL_State::_timer_handler(int signum)
 
 	static bool in_timer;
 
-	if (in_timer || _scheduler->interrupts_are_blocked()){
+	if (in_timer || _scheduler->interrupts_are_blocked() || _sitl == NULL){
 		return;
     }
 
@@ -584,6 +584,16 @@ void SITL_State::loop_hook(void)
         max_fd = max(fd, max_fd);
     }
     fd = ((AVR_SITL::SITLUARTDriver*)hal.uartC)->_fd;
+    if (fd != -1) {
+        FD_SET(fd, &fds);
+        max_fd = max(fd, max_fd);
+    }
+    fd = ((AVR_SITL::SITLUARTDriver*)hal.uartD)->_fd;
+    if (fd != -1) {
+        FD_SET(fd, &fds);
+        max_fd = max(fd, max_fd);
+    }
+    fd = ((AVR_SITL::SITLUARTDriver*)hal.uartE)->_fd;
     if (fd != -1) {
         FD_SET(fd, &fds);
         max_fd = max(fd, max_fd);

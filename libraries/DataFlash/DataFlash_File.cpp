@@ -23,6 +23,7 @@
 #include <AP_Math.h>
 #include <stdio.h>
 #include <time.h>
+#include <dirent.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -35,13 +36,26 @@ extern const AP_HAL::HAL& hal;
 DataFlash_File::DataFlash_File(const char *log_directory) :
     _write_fd(-1),
     _read_fd(-1),
+    _read_offset(0),
+    _write_offset(0),
     _initialised(false),
     _log_directory(log_directory),
     _writebuf(NULL),
-    _writebuf_size(4096),
+    _writebuf_size(16*1024),
+#ifdef CONFIG_ARCH_BOARD_PX4FMU_V1
+    // V1 gets IO errors with larger than 512 byte writes
+    _writebuf_chunk(512),
+#else
+    _writebuf_chunk(4096),
+#endif
     _writebuf_head(0),
     _writebuf_tail(0),
     _last_write_time(0)
+#if CONFIG_HAL_BOARD == HAL_BOARD_PX4
+    ,_perf_write(perf_alloc(PC_ELAPSED, "DF_write")),
+    _perf_fsync(perf_alloc(PC_ELAPSED, "DF_fsync")),
+    _perf_errors(perf_alloc(PC_COUNT, "DF_errors"))
+#endif
 {}
 
 
@@ -52,6 +66,22 @@ void DataFlash_File::Init(const struct LogStructure *structure, uint8_t num_type
     // create the log directory if need be
     int ret;
     struct stat st;
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_PX4
+    // try to cope with an existing lowercase log directory
+    // name. NuttX does not handle case insensitive VFAT well
+    DIR *d = opendir("/fs/microsd/APM");
+    if (d != NULL) {
+        for (struct dirent *de=readdir(d); de; de=readdir(d)) {
+            if (strcmp(de->d_name, "logs") == 0) {
+                rename("/fs/microsd/APM/logs", "/fs/microsd/APM/OLDLOGS");
+                break;
+            }
+        }
+        closedir(d);
+    }
+#endif
+
     ret = stat(_log_directory, &st);
     if (ret == -1) {
         ret = mkdir(_log_directory, 0777);
@@ -93,7 +123,7 @@ bool DataFlash_File::NeedErase(void)
 char *DataFlash_File::_log_file_name(uint16_t log_num)
 {
     char *buf = NULL;
-    asprintf(&buf, "%s/%u.bin", _log_directory, (unsigned)log_num);
+    asprintf(&buf, "%s/%u.BIN", _log_directory, (unsigned)log_num);
     return buf;
 }
 
@@ -104,7 +134,7 @@ char *DataFlash_File::_log_file_name(uint16_t log_num)
 char *DataFlash_File::_lastlog_file_name(void)
 {
     char *buf = NULL;
-    asprintf(&buf, "%s/lastlog.txt", _log_directory);
+    asprintf(&buf, "%s/LASTLOG.TXT", _log_directory);
     return buf;
 }
 
@@ -142,7 +172,7 @@ void DataFlash_File::EraseAll()
 /* Write a block of data at current offset */
 void DataFlash_File::WriteBlock(const void *pBuffer, uint16_t size)
 {
-    if (_write_fd == -1 || !_initialised) {
+    if (_write_fd == -1 || !_initialised || !_writes_enabled) {
         return;
     }
     uint16_t _head;
@@ -280,8 +310,26 @@ int16_t DataFlash_File::get_log_data(uint16_t log_num, uint16_t page, uint32_t o
         _read_fd_log_num = log_num;
     }
     uint32_t ofs = page * (uint32_t)DATAFLASH_PAGE_SIZE + offset;
+
+    /*
+      this rather strange bit of code is here to work around a bug
+      in file offsets in NuttX. Every few hundred blocks of reads
+      (starting at around 350k into a file) NuttX will get the
+      wrong offset for sequential reads. The offset it gets is
+      typically 128k earlier than it should be. It turns out that
+      calling lseek() with 0 offset and SEEK_CUR works around the
+      bug. We can remove this once we find the real bug.
+    */
+    if (ofs / 4096 != (ofs+len) / 4096) {
+        int seek_current = ::lseek(_read_fd, 0, SEEK_CUR);
+        if (seek_current != _read_offset) {
+            ::lseek(_read_fd, _read_offset, SEEK_SET);
+        }
+    }
+
     if (ofs != _read_offset) {
         ::lseek(_read_fd, ofs, SEEK_SET);
+        _read_offset = ofs;
     }
     int16_t ret = (int16_t)::read(_read_fd, data, len);
     if (ret > 0) {
@@ -324,6 +372,7 @@ void DataFlash_File::stop_logging(void)
     if (_write_fd != -1) {
         int fd = _write_fd;
         _write_fd = -1;
+        log_write_started = false;
         ::close(fd);
     }
 }
@@ -356,11 +405,15 @@ uint16_t DataFlash_File::start_new_log(void)
         _initialised = false;
         return 0xFFFF;
     }
+    _write_offset = 0;
+    _writebuf_head = 0;
+    _writebuf_tail = 0;
+    log_write_started = true;
 
     // now update lastlog.txt with the new log number
     fname = _lastlog_file_name();
     FILE *f = ::fopen(fname, "w");
-    fprintf(f, "%u\n", (unsigned)log_num);
+    fprintf(f, "%u\r\n", (unsigned)log_num);
     fclose(f);    
     free(fname);
 
@@ -396,7 +449,10 @@ void DataFlash_File::LogReadProcess(uint16_t log_num,
     _read_offset = 0;
     if (start_page != 0) {
         ::lseek(_read_fd, start_page * DATAFLASH_PAGE_SIZE, SEEK_SET);
+        _read_offset = start_page * DATAFLASH_PAGE_SIZE;
     }
+
+    uint8_t log_counter = 0;
 
     while (true) {
         uint8_t data;
@@ -425,6 +481,11 @@ void DataFlash_File::LogReadProcess(uint16_t log_num,
             case 2:
                 log_step = 0;
                 _print_log_entry(data, print_mode, port);
+                log_counter++;
+                if (log_counter == 10) {
+                    log_counter = 0;
+                    ::lseek(_read_fd, 0, SEEK_CUR);
+                }
                 break;
         }
         if (_read_offset >= (end_page+1) * DATAFLASH_PAGE_SIZE) {
@@ -503,40 +564,61 @@ void DataFlash_File::_io_timer(void)
     if (_write_fd == -1 || !_initialised) {
         return;
     }
+
     uint16_t nbytes = BUF_AVAILABLE(_writebuf);
     if (nbytes == 0) {
         return;
     }
     uint32_t tnow = hal.scheduler->micros();
-    if (nbytes < 512 && 
+    if (nbytes < _writebuf_chunk && 
         tnow - _last_write_time < 2000000UL) {
         // write in 512 byte chunks, but always write at least once
         // per 2 seconds if data is available
         return;
     }
+
+    perf_begin(_perf_write);
+
     _last_write_time = tnow;
-    if (nbytes > 512) {
+    if (nbytes > _writebuf_chunk) {
         // be kind to the FAT PX4 filesystem
-        nbytes = 512;
+        nbytes = _writebuf_chunk;
     }
     if (_writebuf_head > _tail) {
         // only write to the end of the buffer
         nbytes = min(nbytes, _writebuf_size - _writebuf_head);
     }
+
+    // try to align writes on a 512 byte boundary to avoid filesystem
+    // reads
+    if ((nbytes + _write_offset) % 512 != 0) {
+        uint32_t ofs = (nbytes + _write_offset) % 512;
+        if (ofs < nbytes) {
+            nbytes -= ofs;
+        }
+    }
+
     assert(_writebuf_head+nbytes <= _writebuf_size);
     ssize_t nwritten = ::write(_write_fd, &_writebuf[_writebuf_head], nbytes);
     if (nwritten <= 0) {
-        //hal.console->printf("DataFlash write: %d %d\n", (int)nwritten, (int)errno);
+        perf_count(_perf_errors);
         close(_write_fd);
         _write_fd = -1;
         _initialised = false;
     } else {
+        _write_offset += nwritten;
+        /*
+          the best strategy for minimising corruption on microSD cards
+          seems to be to write in 4k chunks and fsync the file on each
+          chunk, ensuring the directory entry is updated after each
+          write.
+         */
+#if CONFIG_HAL_BOARD != HAL_BOARD_AVR_SITL
+        ::fsync(_write_fd);
+#endif
         BUF_ADVANCEHEAD(_writebuf, nwritten);
-        if (hal.scheduler->millis() - last_fsync_ms > 10000) {
-            last_fsync_ms = hal.scheduler->millis();
-            ::fsync(_write_fd);            
-        }
     }
+    perf_end(_perf_write);
 }
 
 #endif // HAL_OS_POSIX_IO
